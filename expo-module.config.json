@@ -1,0 +1,23 @@
+{
+  "platforms": [
+    "apple",
+    "android",
+    "web"
+  ],
+  "apple": {
+    "modules": [
+      "ExpoOneBoxModule"
+    ]
+  },
+  "android": {
+    "modules": [
+      "expo.modules.onebox.oneoh.cloud.ExpoOneBoxModule"
+    ],
+    "gradleAarProjects": [
+      {
+        "name": "libbox",
+        "aarFilePath": "android/libs/libbox.aar"
+      }
+    ]
+  }
+}
