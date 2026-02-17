@@ -89,46 +89,29 @@ public class ExpoOneBoxModule: Module {
     private func initializeLibbox() {
         guard !isInitialized else { return }
 
-        // Use App Group shared directory so both app and extension share the same paths
-        let sharedDir: URL
-        if let groupDir = FileManager.default.containerURL(
+        // Use App Group shared directory — must match extension's FilePath
+        guard let sharedDir = FileManager.default.containerURL(
             forSecurityApplicationGroupIdentifier: Self.appGroupID
-        ) {
-            sharedDir = groupDir
-        } else {
-            // Fallback for development/simulator without App Group
-            sharedDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-            NSLog("[ExpoOneBox] WARNING: App Group not available, using Documents")
+        ) else {
+            NSLog("[ExpoOneBox] ERROR: App Group container not available")
+            return
         }
 
-        let workingDir = sharedDir.appendingPathComponent("working")
-        let tempDir = sharedDir.appendingPathComponent("temp")
+        let cacheDir = sharedDir
+            .appendingPathComponent("Library", isDirectory: true)
+            .appendingPathComponent("Caches", isDirectory: true)
+        let workingDir = cacheDir.appendingPathComponent("Working", isDirectory: true)
 
-        for dir in [workingDir, tempDir] {
+        for dir in [workingDir, cacheDir] {
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         }
 
-        // basePath for Unix sockets — simulator paths are too long (>104 bytes)
-        let basePath: String
-        #if targetEnvironment(simulator)
-        let bundleID = Bundle.main.bundleIdentifier ?? "expo-onebox"
-        let simBase = URL(fileURLWithPath: "/tmp/\(bundleID)")
-        try? FileManager.default.createDirectory(at: simBase, withIntermediateDirectories: true)
-        basePath = simBase.path
-        #else
-        basePath = sharedDir.path
-        #endif
-
+        // Use relativePath matching the reference project's pattern
         let options = LibboxSetupOptions()
-        options.basePath = basePath
-        options.workingPath = workingDir.path
-        options.tempPath = tempDir.path
+        options.basePath = sharedDir.relativePath
+        options.workingPath = workingDir.relativePath
+        options.tempPath = cacheDir.relativePath
         options.logMaxLines = 3000
-        #if DEBUG
-        options.debug = true
-        #else
-        options.debug = false
-        #endif
 
         var setupError: NSError?
         LibboxSetup(options, &setupError)
@@ -137,7 +120,7 @@ public class ExpoOneBoxModule: Module {
             return
         }
 
-        let stderrPath = tempDir.appendingPathComponent("stderr.log").path
+        let stderrPath = cacheDir.appendingPathComponent("stderr.log").relativePath
         var stderrError: NSError?
         LibboxRedirectStderr(stderrPath, &stderrError)
         if let stderrError {
@@ -174,6 +157,20 @@ public class ExpoOneBoxModule: Module {
         return manager
     }
 
+    // MARK: - Prepare Options (following ExtensionProfile pattern)
+
+    private func prepareStartOptions(config: String) -> [String: NSObject] {
+        var options: [String: NSObject] = [
+            "configContent": NSString(string: config),
+            "systemProxyEnabled": NSNumber(value: true),
+            "excludeDefaultRoute": NSNumber(value: false),
+            "autoRouteUseSubRangesByDefault": NSNumber(value: false),
+            "excludeAPNsRoute": NSNumber(value: false),
+            "includeAllNetworks": NSNumber(value: false),
+        ]
+        return options
+    }
+
     // MARK: - Start / Stop VPN
 
     private func startVPN(config: String) async throws {
@@ -203,10 +200,8 @@ public class ExpoOneBoxModule: Module {
 
         updateStatus(1) // Starting
 
-        // Pass config to the tunnel extension via start options
-        let options: [String: NSObject] = [
-            "configContent": NSString(string: config)
-        ]
+        // Prepare options (same dict the extension receives in startTunnel)
+        let options = prepareStartOptions(config: config)
 
         do {
             try manager.connection.startVPNTunnel(options: options)
@@ -231,10 +226,11 @@ public class ExpoOneBoxModule: Module {
         trafficMonitor?.disconnect()
         trafficMonitor = nil
 
-        // Try graceful close via standalone CommandClient
+        // Try graceful close via standalone CommandClient (same as reference's ExtensionProfile.stop())
         do {
-            let client = try LibboxNewStandaloneCommandClient()
-            try client?.serviceClose()
+            try await Task.detached(priority: .userInitiated) {
+                try LibboxNewStandaloneCommandClient()!.serviceClose()
+            }.value
         } catch {
             NSLog("[ExpoOneBox] Standalone close error (non-fatal): \(error.localizedDescription)")
         }
