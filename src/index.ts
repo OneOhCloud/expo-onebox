@@ -1,11 +1,11 @@
 // Reexport the native module. On web, it will be resolved to ExpoOneBoxModule.web.ts
 // and on native platforms to ExpoOneBoxModule.ts
-export * from './ExpoOneBox.types';
-export { default } from './ExpoOneBoxModule';
-export { default as ExpoOneBoxView } from './ExpoOneBoxView';
 import { EventSubscription } from 'expo-modules-core';
 import { TrafficUpdateEventPayload } from './ExpoOneBox.types';
 import ExpoOneBoxModule from './ExpoOneBoxModule';
+export * from './ExpoOneBox.types';
+export { default } from './ExpoOneBoxModule';
+export { default as ExpoOneBoxView } from './ExpoOneBoxView';
 
 export function GetVersion(): string {
     return ExpoOneBoxModule.getLibBoxVersion();

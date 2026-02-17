@@ -76,7 +76,7 @@ class ExpoOneBoxModule :ServiceConnection.Callback, Module() {
     }
 
     override fun definition() = ModuleDefinition {
-        Name("ExpoOneBoxModule")
+        Name("ExpoOneBox")
 
         // 定义发送到 JS 的事件
         Events("onStatusChange", "onError", "onLog", "onTrafficUpdate")
