@@ -3,6 +3,9 @@ import Libbox
 import Network
 import NetworkExtension
 import UserNotifications
+import os.log
+
+private let logger = Logger(subsystem: "cloud.oneoh.networktools.tunnel", category: "ExtPlatform")
 
 /// Strictly follows sing-box-for-apple's ExtensionPlatformInterface pattern.
 class ExtensionPlatformInterface: NSObject, LibboxPlatformInterfaceProtocol, LibboxCommandServerHandlerProtocol {
@@ -24,11 +27,18 @@ class ExtensionPlatformInterface: NSObject, LibboxPlatformInterfaceProtocol, Lib
 
     private func openTun0(_ options: LibboxTunOptionsProtocol?, _ ret0_: UnsafeMutablePointer<Int32>?) async throws {
         guard let options else {
+            logger.error("Nil options")
             throw NSError(domain: "ExtensionPlatformInterface", code: 0, userInfo: [NSLocalizedDescriptionKey: "Nil options"])
         }
         guard let ret0_ else {
+            logger.error("Nil return pointer")
             throw NSError(domain: "ExtensionPlatformInterface", code: 0, userInfo: [NSLocalizedDescriptionKey: "Nil return pointer"])
         }
+
+        logger.log("openTun called")
+        let autoRoute = options.getAutoRoute()
+        let mtu = options.getMTU()
+        logger.log("AutoRoute: \(autoRoute), MTU: \(mtu)")
 
         let prefs = tunnel.overridePreferences ?? PacketTunnelProvider.OverridePreferences()
         let autoRouteUseSubRangesByDefault = prefs.autoRouteUseSubRangesByDefault
@@ -191,17 +201,23 @@ class ExtensionPlatformInterface: NSObject, LibboxPlatformInterfaceProtocol, Lib
         }
 
         networkSettings = settings
+        logger.log("Applying tunnel network settings...")
         try await tunnel.setTunnelNetworkSettings(settings)
+        logger.log("Tunnel network settings applied successfully")
 
         if let tunFd = tunnel.packetFlow.value(forKeyPath: "socket.fileDescriptor") as? Int32 {
+            logger.log("Got tunnel FD from packetFlow: \(tunFd)")
             ret0_.pointee = tunFd
             return
         }
 
         let tunFdFromLoop = LibboxGetTunnelFileDescriptor()
+        logger.log("Got tunnel FD from loop: \(tunFdFromLoop)")
         if tunFdFromLoop != -1 {
             ret0_.pointee = tunFdFromLoop
+            logger.log("openTun completed successfully")
         } else {
+            logger.error("Missing file descriptor")
             throw NSError(domain: "ExtensionPlatformInterface", code: 0, userInfo: [NSLocalizedDescriptionKey: "Missing file descriptor"])
         }
     }

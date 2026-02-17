@@ -1,6 +1,9 @@
 import Foundation
 import Libbox
 import NetworkExtension
+import os.log
+
+private let logger = Logger(subsystem: "cloud.oneoh.networktools.tunnel", category: "PacketTunnel")
 
 /// Strictly follows sing-box-for-apple's ExtensionProvider pattern.
 class PacketTunnelProvider: NEPacketTunnelProvider {
@@ -71,15 +74,26 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         let workingPath = FilePath.workingDirectory.relativePath
         let tempPath = FilePath.cacheDirectory.relativePath
 
+        logger.log("Starting tunnel...")
+        logger.log("basePath: \(basePath)")
+        logger.log("workingPath: \(workingPath)")
+        logger.log("tempPath: \(tempPath)")
+
         startOptionsURL = URL(fileURLWithPath: basePath).appendingPathComponent(ExtensionStartOptions.snapshotFileName)
 
         let effectiveOptions = try resolveStartOptions(startOptions)
         if effectiveOptions["configContent"] == nil {
+            logger.error("missing configContent")
             throw ExtensionStartupError("(packet-tunnel) error: missing configContent in tunnel options")
         }
+        let configLen = (effectiveOptions["configContent"] as? String)?.count ?? 0
+        logger.log("Config content length: \(configLen)")
+
         do {
             try persistStartOptions(effectiveOptions)
+            logger.log("Start options persisted")
         } catch {
+            logger.error("persist start options: \(error.localizedDescription)")
             throw ExtensionStartupError("(packet-tunnel) error: persist start options: \(error.localizedDescription)")
         }
 
@@ -94,15 +108,19 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         var setupError: NSError?
         LibboxSetup(options, &setupError)
         if let setupError {
+            logger.error("setup service: \(setupError.localizedDescription)")
             throw ExtensionStartupError("(packet-tunnel) error: setup service: \(setupError.localizedDescription)")
         }
+        logger.log("Libbox setup completed")
 
         let stderrPath = URL(fileURLWithPath: tempPath, isDirectory: true).appendingPathComponent("stderr.log").path
         var stderrError: NSError?
         LibboxRedirectStderr(stderrPath, &stderrError)
         if let stderrError {
+            logger.error("redirect stderr: \(stderrError.localizedDescription)")
             throw ExtensionStartupError("(packet-tunnel) redirect stderr error: \(stderrError.localizedDescription)")
         }
+        logger.log("Stderr redirected to: \(stderrPath)")
 
         let ignoreMemoryLimit = (effectiveOptions["ignoreMemoryLimit"] as? NSNumber)?.boolValue ?? false
         LibboxSetMemoryLimit(!ignoreMemoryLimit)
@@ -110,18 +128,26 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         var error: NSError?
         commandServer = LibboxNewCommandServer(platformInterface, platformInterface, &error)
         if let error {
+            logger.error("create command server: \(error.localizedDescription)")
             throw ExtensionStartupError("(packet-tunnel): create command server error: \(error.localizedDescription)")
         }
+        logger.log("Command server created")
+
         do {
             try commandServer!.start()
+            logger.log("Command server started")
         } catch {
+            logger.error("start command server: \(error.localizedDescription)")
             throw ExtensionStartupError("(packet-tunnel): start command server error: \(error.localizedDescription)")
         }
 
         writeMessage("(packet-tunnel): Here I stand")
+        logger.log("Starting service...")
         do {
             try await startService()
+            logger.log("Service started successfully")
         } catch {
+            logger.error("start service: \(error.localizedDescription)")
             throw error
         }
     }
@@ -134,13 +160,17 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
 
     private func startService() async throws {
         guard let configContent = tunnelOptions?["configContent"] as? String else {
+            logger.error("missing configContent in startService")
             throw ExtensionStartupError("(packet-tunnel) error: missing configContent in tunnel options")
         }
 
+        logger.log("Starting service with config length: \(configContent.count)")
         let options = LibboxOverrideOptions()
         do {
             try commandServer!.startOrReloadService(configContent, options: options)
+            logger.log("Service started/reloaded successfully")
         } catch {
+            logger.error("startOrReloadService failed: \(error.localizedDescription)")
             throw ExtensionStartupError("(packet-tunnel) error: start service: \(error.localizedDescription)")
         }
     }

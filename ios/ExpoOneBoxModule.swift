@@ -74,6 +74,10 @@ public class ExpoOneBoxModule: Module {
             await self.stopVPN()
         }
 
+        AsyncFunction("getExtensionLogs") { () -> String in
+            return self.readExtensionLogs()
+        }
+
         View(ExpoOneBoxView.self) {
             Prop("url") { (view: ExpoOneBoxView, url: URL) in
                 if view.webView.url != url {
@@ -263,6 +267,12 @@ public class ExpoOneBoxModule: Module {
             trafficMonitor?.disconnect()
             trafficMonitor = nil
             updateStatus(0)
+            // 读取扩展日志以了解为什么断开连接
+            let logs = readExtensionLogs()
+            if !logs.isEmpty {
+                sendLog(message: "=== Extension Logs ===")
+                sendLog(message: logs)
+            }
         case .connecting:
             updateStatus(1)
         case .connected:
@@ -285,6 +295,32 @@ public class ExpoOneBoxModule: Module {
         let monitor = TrafficMonitor(module: self)
         self.trafficMonitor = monitor
         monitor.connect()
+    }
+
+    // MARK: - Extension Logs
+
+    /// 读取扩展的 stderr.log 文件
+    private func readExtensionLogs() -> String {
+        guard let sharedDir = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: Self.appGroupID
+        ) else {
+            return "Error: Cannot access app group container"
+        }
+
+        let cacheDir = sharedDir
+            .appendingPathComponent("Library", isDirectory: true)
+            .appendingPathComponent("Caches", isDirectory: true)
+        let logPath = cacheDir.appendingPathComponent("stderr.log")
+
+        do {
+            let content = try String(contentsOf: logPath, encoding: .utf8)
+            // 返回最后 50 行
+            let lines = content.components(separatedBy: "\n")
+            let lastLines = lines.suffix(50).joined(separator: "\n")
+            return lastLines
+        } catch {
+            return "Error reading extension logs: \(error.localizedDescription)\nLog path: \(logPath.path)"
+        }
     }
 
     // MARK: - Cleanup
