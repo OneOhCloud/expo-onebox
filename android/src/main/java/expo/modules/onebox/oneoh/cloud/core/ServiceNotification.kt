@@ -14,7 +14,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.lifecycle.MutableLiveData
 import expo.modules.onebox.oneoh.cloud.R
-import expo.modules.onebox.oneoh.cloud.Status
+import expo.modules.onebox.oneoh.cloud.helper.Status
 import io.nekohasekai.libbox.Libbox
 import io.nekohasekai.libbox.StatusMessage
 import io.nekohasekai.sfa.utils.CommandClient
@@ -22,7 +22,7 @@ import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.withContext
-import expo.modules.onebox.oneoh.cloud.Action
+import expo.modules.onebox.oneoh.cloud.helper.Action
 import expo.modules.onebox.oneoh.cloud.ExpoOneBoxModule.Companion.notification
 import expo.modules.onebox.oneoh.cloud.ExpoOneBoxModule.Companion.notificationManager
 

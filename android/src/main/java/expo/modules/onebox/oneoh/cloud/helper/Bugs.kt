@@ -1,4 +1,4 @@
-package expo.modules.onebox.oneoh.cloud
+package expo.modules.onebox.oneoh.cloud.helper
 
 /**
  * Android 平台相关 Bug 修复标志

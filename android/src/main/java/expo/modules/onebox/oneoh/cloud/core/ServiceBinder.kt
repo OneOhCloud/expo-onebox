@@ -2,7 +2,7 @@ package expo.modules.onebox.oneoh.cloud.core
 
 import android.os.RemoteCallbackList
 import androidx.lifecycle.MutableLiveData
-import expo.modules.onebox.oneoh.cloud.Status
+import expo.modules.onebox.oneoh.cloud.helper.Status
 import expo.modules.onebox.oneoh.cloud.aidl.IService
 import expo.modules.onebox.oneoh.cloud.aidl.IServiceCallback
 import kotlinx.coroutines.DelicateCoroutinesApi

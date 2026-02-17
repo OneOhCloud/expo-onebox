@@ -1,13 +1,18 @@
-package expo.modules.onebox.oneoh.cloud
+package expo.modules.onebox.oneoh.cloud.core
 
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.ServiceConnection
 import android.os.IBinder
 import android.os.RemoteException
 import android.util.Log
 import expo.modules.onebox.oneoh.cloud.aidl.IService
 import expo.modules.onebox.oneoh.cloud.aidl.IServiceCallback
+import expo.modules.onebox.oneoh.cloud.helper.Action
+import expo.modules.onebox.oneoh.cloud.helper.Alert
+import expo.modules.onebox.oneoh.cloud.helper.Settings
+import expo.modules.onebox.oneoh.cloud.helper.Status
 
 /**
  * VPN 服务连接管理。
@@ -17,7 +22,7 @@ class ServiceConnection(
     private val context: Context,
     callback: Callback,
     private val register: Boolean = true
-) : android.content.ServiceConnection {
+) : ServiceConnection {
 
     companion object {
         private const val TAG = "ServiceConnection"

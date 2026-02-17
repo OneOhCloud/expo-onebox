@@ -1,4 +1,4 @@
-package expo.modules.onebox.oneoh.cloud
+package expo.modules.onebox.oneoh.cloud.helper
 
 /**
  * VPN 服务状态枚举

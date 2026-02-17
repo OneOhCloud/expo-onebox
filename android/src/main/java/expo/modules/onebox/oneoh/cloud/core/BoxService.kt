@@ -21,10 +21,10 @@ import io.nekohasekai.libbox.Notification
 import io.nekohasekai.libbox.OverrideOptions
 import io.nekohasekai.libbox.PlatformInterface
 import io.nekohasekai.libbox.SystemProxyStatus
-import expo.modules.onebox.oneoh.cloud.Action
-import expo.modules.onebox.oneoh.cloud.Alert
+import expo.modules.onebox.oneoh.cloud.helper.Action
+import expo.modules.onebox.oneoh.cloud.helper.Alert
 import expo.modules.onebox.oneoh.cloud.R
-import expo.modules.onebox.oneoh.cloud.Status
+import expo.modules.onebox.oneoh.cloud.helper.Status
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope

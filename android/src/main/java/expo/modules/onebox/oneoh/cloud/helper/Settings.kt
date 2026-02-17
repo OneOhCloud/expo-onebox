@@ -1,4 +1,4 @@
-package expo.modules.onebox.oneoh.cloud
+package expo.modules.onebox.oneoh.cloud.helper
 
 import expo.modules.onebox.oneoh.cloud.core.ProxyService
 import expo.modules.onebox.oneoh.cloud.core.VPNService

@@ -4,12 +4,16 @@ import NetworkExtension
 
 public class ExpoOneBoxModule: Module {
 
-    private var commandServer: LibboxCommandServer?
-    private var platformInterface: PlatformInterfaceImpl?
+    // Extension bundle identifier — must match the NE target's PRODUCT_BUNDLE_IDENTIFIER
+    private static let extensionBundleID = "cloud.oneoh.networktools.tunnel"
+    // App Group identifier — shared between app and extension
+    private static let appGroupID = "group.cloud.oneoh.networktools"
+
+    private var vpnManager: NETunnelProviderManager?
     private var trafficMonitor: TrafficMonitor?
     private var currentStatus: Int = 0 // 0=Stopped, 1=Starting, 2=Started, 3=Stopping
     private var isInitialized = false
-    private var vpnManager: NETunnelProviderManager?
+    private var statusObserver: NSObjectProtocol?
 
     public func definition() -> ModuleDefinition {
         Name("ExpoOneBox")
@@ -18,10 +22,11 @@ public class ExpoOneBoxModule: Module {
 
         OnCreate {
             self.initializeLibbox()
+            self.observeVPNStatus()
         }
 
         OnDestroy {
-            self.stopServiceInternal()
+            self.cleanup()
         }
 
         Function("hello") {
@@ -37,7 +42,6 @@ public class ExpoOneBoxModule: Module {
         }
 
         AsyncFunction("checkVpnPermission") { () async -> Bool in
-            // Check if a VPN configuration profile is already installed
             do {
                 let managers = try await NETunnelProviderManager.loadAllFromPreferences()
                 if let manager = managers.first {
@@ -52,28 +56,9 @@ public class ExpoOneBoxModule: Module {
         }
 
         AsyncFunction("requestVpnPermission") { () async -> Bool in
-            // Install or update the VPN profile. iOS will show a system "Allow VPN" prompt
-            // if no profile is installed yet, or if the user previously removed it.
             do {
-                let managers = try await NETunnelProviderManager.loadAllFromPreferences()
-                let manager = managers.first ?? NETunnelProviderManager()
-
-                manager.localizedDescription = "OneBox VPN"
-
-                let proto = NETunnelProviderProtocol()
-                proto.providerBundleIdentifier = Bundle.main.bundleIdentifier
-                proto.serverAddress = "sing-box"
-                manager.protocolConfiguration = proto
-                manager.isEnabled = true
-
-                // This triggers the system "Allow VPN Configurations" dialog
-                try await manager.saveToPreferences()
-
-                // Re-load to get the updated state after user approval
-                try await manager.loadFromPreferences()
-
+                let manager = try await self.loadOrCreateManager()
                 self.vpnManager = manager
-                NSLog("[ExpoOneBox] VPN profile installed, enabled=\(manager.isEnabled)")
                 return manager.isEnabled
             } catch {
                 NSLog("[ExpoOneBox] requestVpnPermission error: \(error.localizedDescription)")
@@ -82,11 +67,11 @@ public class ExpoOneBoxModule: Module {
         }
 
         AsyncFunction("start") { (config: String) in
-            try self.startService(config: config)
+            try await self.startVPN(config: config)
         }
 
         AsyncFunction("stop") {
-            self.stopServiceInternal()
+            await self.stopVPN()
         }
 
         View(ExpoOneBoxView.self) {
@@ -104,14 +89,26 @@ public class ExpoOneBoxModule: Module {
     private func initializeLibbox() {
         guard !isInitialized else { return }
 
-        guard let documentsDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
-            NSLog("[ExpoOneBox] Failed to get documents directory")
-            return
+        // Use App Group shared directory so both app and extension share the same paths
+        let sharedDir: URL
+        if let groupDir = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: Self.appGroupID
+        ) {
+            sharedDir = groupDir
+        } else {
+            // Fallback for development/simulator without App Group
+            sharedDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+            NSLog("[ExpoOneBox] WARNING: App Group not available, using Documents")
         }
 
-        // Unix socket path limit is 104 bytes on macOS/iOS.
-        // Simulator container paths are very long (~170 chars), so we use /tmp/ as basePath
-        // on the simulator. On real devices, container paths are short (~60 chars).
+        let workingDir = sharedDir.appendingPathComponent("working")
+        let tempDir = sharedDir.appendingPathComponent("temp")
+
+        for dir in [workingDir, tempDir] {
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+
+        // basePath for Unix sockets — simulator paths are too long (>104 bytes)
         let basePath: String
         #if targetEnvironment(simulator)
         let bundleID = Bundle.main.bundleIdentifier ?? "expo-onebox"
@@ -119,14 +116,8 @@ public class ExpoOneBoxModule: Module {
         try? FileManager.default.createDirectory(at: simBase, withIntermediateDirectories: true)
         basePath = simBase.path
         #else
-        basePath = documentsDir.path
+        basePath = sharedDir.path
         #endif
-
-        let workingDir = documentsDir.appendingPathComponent("working")
-        let tempDir = FileManager.default.temporaryDirectory
-
-        // Ensure directories exist
-        try? FileManager.default.createDirectory(at: workingDir, withIntermediateDirectories: true)
 
         let options = LibboxSetupOptions()
         options.basePath = basePath
@@ -146,7 +137,6 @@ public class ExpoOneBoxModule: Module {
             return
         }
 
-        // Redirect stderr for crash debugging
         let stderrPath = tempDir.appendingPathComponent("stderr.log").path
         var stderrError: NSError?
         LibboxRedirectStderr(stderrPath, &stderrError)
@@ -157,162 +147,159 @@ public class ExpoOneBoxModule: Module {
         LibboxSetMemoryLimit(false) // No strict memory limit in main app
 
         isInitialized = true
-        NSLog("[ExpoOneBox] Libbox initialized successfully, version: \(LibboxVersion())")
+        NSLog("[ExpoOneBox] Libbox initialized, version: \(LibboxVersion())")
     }
 
-    // MARK: - Service Management
+    // MARK: - VPN Manager
 
-    private func startService(config: String) throws {
+    /// Load existing or create a new NETunnelProviderManager.
+    /// Creating/saving triggers the system "Allow VPN" dialog if needed.
+    private func loadOrCreateManager() async throws -> NETunnelProviderManager {
+        let managers = try await NETunnelProviderManager.loadAllFromPreferences()
+        let manager = managers.first ?? NETunnelProviderManager()
+
+        manager.localizedDescription = "OneBox VPN"
+
+        let proto = NETunnelProviderProtocol()
+        proto.providerBundleIdentifier = Self.extensionBundleID
+        proto.serverAddress = "sing-box"
+        proto.disconnectOnSleep = false
+        manager.protocolConfiguration = proto
+        manager.isEnabled = true
+
+        try await manager.saveToPreferences()
+        try await manager.loadFromPreferences()
+
+        NSLog("[ExpoOneBox] VPN profile installed, enabled=\(manager.isEnabled)")
+        return manager
+    }
+
+    // MARK: - Start / Stop VPN
+
+    private func startVPN(config: String) async throws {
         guard isInitialized else {
-            let error = NSError(domain: "ExpoOneBox", code: -1, userInfo: [
-                NSLocalizedDescriptionKey: "Libbox not initialized"
-            ])
+            let error = NSError(domain: "ExpoOneBox", code: -1,
+                                userInfo: [NSLocalizedDescriptionKey: "Libbox not initialized"])
             sendError(type: "StartService", message: error.localizedDescription, source: "module")
             throw error
         }
 
-        // Stop any existing service first
-        stopServiceInternal()
+        // Load or create the VPN manager
+        let manager: NETunnelProviderManager
+        if let existing = vpnManager {
+            try await existing.loadFromPreferences()
+            manager = existing
+        } else {
+            manager = try await loadOrCreateManager()
+        }
+        self.vpnManager = manager
+
+        // Ensure the profile is enabled
+        if !manager.isEnabled {
+            manager.isEnabled = true
+            try await manager.saveToPreferences()
+            try await manager.loadFromPreferences()
+        }
 
         updateStatus(1) // Starting
 
-        // Create platform interface
-        let pi = PlatformInterfaceImpl(module: self)
-        self.platformInterface = pi
+        // Pass config to the tunnel extension via start options
+        let options: [String: NSObject] = [
+            "configContent": NSString(string: config)
+        ]
 
-        // Create CommandServer
-        var serverError: NSError?
-        let server = LibboxNewCommandServer(pi, pi, &serverError)
-        if let serverError {
-            updateStatus(0)
-            platformInterface = nil
-            sendError(type: "CreateService", message: serverError.localizedDescription, source: "binary")
-            throw serverError
-        }
-
-        guard let server else {
-            updateStatus(0)
-            platformInterface = nil
-            let error = NSError(domain: "ExpoOneBox", code: -1, userInfo: [
-                NSLocalizedDescriptionKey: "Failed to create command server"
-            ])
-            sendError(type: "CreateService", message: error.localizedDescription, source: "module")
-            throw error
-        }
-
-        self.commandServer = server
-
-        // Start CommandServer
         do {
-            try server.start()
+            try manager.connection.startVPNTunnel(options: options)
         } catch {
             updateStatus(0)
-            self.commandServer = nil
-            platformInterface = nil
-            sendError(type: "StartCommandServer", message: error.localizedDescription, source: "module")
+            sendError(type: "StartVPN", message: error.localizedDescription, source: "module")
             throw error
         }
 
-        // Process config: fix cache-file path for iOS
-        let processedConfig = processConfig(config)
+        NSLog("[ExpoOneBox] VPN start requested")
+    }
 
-        // Start the sing-box service with the provided config
-        let overrideOptions = LibboxOverrideOptions()
-        do {
-            try server.startOrReloadService(processedConfig, options: overrideOptions)
-        } catch {
+    private func stopVPN() async {
+        guard let manager = vpnManager else {
             updateStatus(0)
-            server.close()
-            self.commandServer = nil
-            platformInterface = nil
-            sendError(type: "StartService", message: error.localizedDescription, source: "binary")
-            throw error
+            return
         }
 
-        updateStatus(2) // Started
-
-        // Start traffic monitoring via CommandClient
-        let monitor = TrafficMonitor(module: self)
-        self.trafficMonitor = monitor
-        monitor.connect()
-
-        NSLog("[ExpoOneBox] Service started successfully")
-    }
-
-    // MARK: - Config Processing
-
-    /// Rewrites cache-file and rule-set paths in the config JSON
-    /// so they point to a valid iOS-writable directory.
-    private func processConfig(_ config: String) -> String {
-        guard let data = config.data(using: .utf8),
-              var json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else {
-            NSLog("[ExpoOneBox] Failed to parse config JSON, using as-is")
-            return config
-        }
-
-        let workingDir = getWorkingDir()
-        let cacheDir = workingDir + "/cache"
-        try? FileManager.default.createDirectory(atPath: cacheDir, withIntermediateDirectories: true)
-
-        // Fix experimental.cache_file.path
-        if var experimental = json["experimental"] as? [String: Any] {
-            if var cacheFile = experimental["cache_file"] as? [String: Any] {
-                if cacheFile["path"] != nil {
-                    cacheFile["path"] = cacheDir + "/cache.db"
-                    experimental["cache_file"] = cacheFile
-                    json["experimental"] = experimental
-                    NSLog("[ExpoOneBox] Rewrote cache_file.path → \(cacheDir)/cache.db")
-                }
-            }
-            json["experimental"] = experimental
-        }
-
-        guard let outputData = try? JSONSerialization.data(withJSONObject: json),
-              let outputString = String(data: outputData, encoding: .utf8)
-        else {
-            return config
-        }
-        return outputString
-    }
-
-    private func getWorkingDir() -> String {
-        if let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
-            return dir.appendingPathComponent("working").path
-        }
-        return NSTemporaryDirectory()
-    }
-
-    private func stopServiceInternal() {
-        guard currentStatus == 2 || currentStatus == 1 else { return }
-
-        let wasStarted = currentStatus == 2
         updateStatus(3) // Stopping
 
         // Disconnect traffic monitor first
         trafficMonitor?.disconnect()
         trafficMonitor = nil
 
-        // Close the service
-        if let server = commandServer {
-            do {
-                try server.closeService()
-            } catch {
-                NSLog("[ExpoOneBox] Close service error: \(error.localizedDescription)")
-            }
-            server.close()
-            commandServer = nil
+        // Try graceful close via standalone CommandClient
+        do {
+            let client = try LibboxNewStandaloneCommandClient()
+            try client?.serviceClose()
+        } catch {
+            NSLog("[ExpoOneBox] Standalone close error (non-fatal): \(error.localizedDescription)")
         }
 
-        // Reset platform interface
-        platformInterface?.reset()
-        platformInterface = nil
+        manager.connection.stopVPNTunnel()
 
-        updateStatus(0) // Stopped
+        NSLog("[ExpoOneBox] VPN stop requested")
+    }
 
-        if wasStarted {
-            NSLog("[ExpoOneBox] Service stopped")
+    // MARK: - VPN Status Observation
+
+    private func observeVPNStatus() {
+        statusObserver = NotificationCenter.default.addObserver(
+            forName: .NEVPNStatusDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self,
+                  let connection = notification.object as? NEVPNConnection
+            else { return }
+            self.handleVPNStatusChange(connection.status)
         }
+    }
+
+    private func handleVPNStatusChange(_ status: NEVPNStatus) {
+        switch status {
+        case .invalid:
+            updateStatus(0)
+        case .disconnected:
+            trafficMonitor?.disconnect()
+            trafficMonitor = nil
+            updateStatus(0)
+        case .connecting:
+            updateStatus(1)
+        case .connected:
+            updateStatus(2)
+            startTrafficMonitor()
+        case .reasserting:
+            updateStatus(1)
+        case .disconnecting:
+            updateStatus(3)
+        @unknown default:
+            break
+        }
+    }
+
+    // MARK: - Traffic Monitoring
+
+    /// Connect a CommandClient to the extension's CommandServer for live traffic data.
+    private func startTrafficMonitor() {
+        guard trafficMonitor == nil else { return }
+        let monitor = TrafficMonitor(module: self)
+        self.trafficMonitor = monitor
+        monitor.connect()
+    }
+
+    // MARK: - Cleanup
+
+    private func cleanup() {
+        if let observer = statusObserver {
+            NotificationCenter.default.removeObserver(observer)
+            statusObserver = nil
+        }
+        trafficMonitor?.disconnect()
+        trafficMonitor = nil
     }
 
     // MARK: - Event Dispatch
@@ -368,27 +355,15 @@ public class ExpoOneBoxModule: Module {
         ])
     }
 
-    // MARK: - Service Callback
+    // MARK: - Compatibility
 
-    /// Called by PlatformInterfaceImpl when the service stops externally (e.g., libbox error).
+    /// Called by TrafficMonitor if service stops externally.
     internal func handleServiceStopped() {
         trafficMonitor?.disconnect()
         trafficMonitor = nil
-
-        // Don't call closeService() — the service is already stopping.
-        // Just close the command server.
-        if let server = commandServer {
-            server.close()
-            commandServer = nil
-        }
-
-        platformInterface?.reset()
-        platformInterface = nil
-
         if currentStatus != 0 {
-            updateStatus(0) // Stopped
+            updateStatus(0)
         }
-
         NSLog("[ExpoOneBox] Service stopped by external event")
     }
 }
