@@ -14,6 +14,7 @@ public class ExpoOneBoxModule: Module {
     private var currentStatus: Int = 0 // 0=Stopped, 1=Starting, 2=Started, 3=Stopping
     private var isInitialized = false
     private var statusObserver: NSObjectProtocol?
+    internal var coreLogEnabled = false
 
     public func definition() -> ModuleDefinition {
         Name("ExpoOneBox")
@@ -39,6 +40,15 @@ public class ExpoOneBoxModule: Module {
 
         Function("getStatus") {
             return self.currentStatus
+        }
+
+        Function("setCoreLogEnabled") { (enabled: Bool) in
+            self.coreLogEnabled = enabled
+            NSLog("[ExpoOneBox] Core log output \(enabled ? "enabled" : "disabled")")
+        }
+
+        Function("getCoreLogEnabled") {
+            return self.coreLogEnabled
         }
 
         AsyncFunction("checkVpnPermission") { () async -> Bool in
@@ -115,23 +125,18 @@ public class ExpoOneBoxModule: Module {
         options.basePath = sharedDir.relativePath
         options.workingPath = workingDir.relativePath
         options.tempPath = cacheDir.relativePath
-        options.logMaxLines = 3000
 
         var setupError: NSError?
         LibboxSetup(options, &setupError)
         if let setupError {
             NSLog("[ExpoOneBox] Setup error: \(setupError.localizedDescription)")
-            return
+            // Non-fatal: continue anyway, extension will do its own setup
         }
 
-        let stderrPath = cacheDir.appendingPathComponent("stderr.log").relativePath
-        var stderrError: NSError?
-        LibboxRedirectStderr(stderrPath, &stderrError)
-        if let stderrError {
-            NSLog("[ExpoOneBox] Redirect stderr error: \(stderrError.localizedDescription)")
-        }
-
-        LibboxSetMemoryLimit(false) // No strict memory limit in main app
+        // Match reference: main app only calls LibboxSetup + LibboxSetLocale
+        // Do NOT call LibboxRedirectStderr or LibboxSetMemoryLimit in main app
+        // Those are only for the extension process
+        LibboxSetLocale(Locale.current.identifier)
 
         isInitialized = true
         NSLog("[ExpoOneBox] Libbox initialized, version: \(LibboxVersion())")
@@ -195,12 +200,11 @@ public class ExpoOneBoxModule: Module {
         }
         self.vpnManager = manager
 
-        // Ensure the profile is enabled
-        if !manager.isEnabled {
-            manager.isEnabled = true
-            try await manager.saveToPreferences()
-            try await manager.loadFromPreferences()
-        }
+        // Always ensure the profile is enabled and save before starting
+        // (matching reference project's ExtensionProfile.start() pattern)
+        manager.isEnabled = true
+        try await manager.saveToPreferences()
+        try await manager.loadFromPreferences()
 
         updateStatus(1) // Starting
 
@@ -364,6 +368,9 @@ public class ExpoOneBoxModule: Module {
     }
 
     internal func sendLog(message: String) {
+        if coreLogEnabled {
+            NSLog("[sing-box] %@", message)
+        }
         sendEvent("onLog", [
             "message": message
         ])

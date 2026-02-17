@@ -79,6 +79,11 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         logger.log("workingPath: \(workingPath)")
         logger.log("tempPath: \(tempPath)")
 
+        // Ensure directories exist before LibboxSetup
+        for dir in [FilePath.workingDirectory, FilePath.cacheDirectory] {
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+
         startOptionsURL = URL(fileURLWithPath: basePath).appendingPathComponent(ExtensionStartOptions.snapshotFileName)
 
         let effectiveOptions = try resolveStartOptions(startOptions)

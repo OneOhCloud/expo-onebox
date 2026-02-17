@@ -48,6 +48,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
         const val VPN_REQUEST_CODE = 1001
 
         var currentStatus: Status = Status.Stopped
+        var coreLogEnabled: Boolean = false
 
 
         val notification by lazy { application.getSystemService<NotificationManager>()!! }
@@ -126,6 +127,15 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
                 // 查询失败时返回当前缓存的状态
                 currentStatus.ordinal
             }
+        }
+
+        Function("setCoreLogEnabled") { enabled: Boolean ->
+            coreLogEnabled = enabled
+            Log.d(TAG, "Core log output ${if (enabled) "enabled" else "disabled"}")
+        }
+
+        Function("getCoreLogEnabled") {
+            return@Function coreLogEnabled
         }
 
         AsyncFunction("checkVpnPermission") {

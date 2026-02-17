@@ -31,6 +31,14 @@ export function GetStatus(): number {
     return ExpoOneBoxModule.getStatus();
 }
 
+export function SetCoreLogEnabled(enabled: boolean): void {
+    ExpoOneBoxModule.setCoreLogEnabled(enabled);
+}
+
+export function GetCoreLogEnabled(): boolean {
+    return ExpoOneBoxModule.getCoreLogEnabled();
+}
+
 // 添加事件监听器的便捷方法
 export function addStatusChangeListener(callback: (event: { status: number; statusName: string; message: string }) => void)
     : EventSubscription {
