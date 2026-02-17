@@ -1,5 +1,6 @@
 import ExpoModulesCore
 import Libbox
+import NetworkExtension
 
 public class ExpoOneBoxModule: Module {
 
@@ -8,6 +9,7 @@ public class ExpoOneBoxModule: Module {
     private var trafficMonitor: TrafficMonitor?
     private var currentStatus: Int = 0 // 0=Stopped, 1=Starting, 2=Started, 3=Stopping
     private var isInitialized = false
+    private var vpnManager: NETunnelProviderManager?
 
     public func definition() -> ModuleDefinition {
         Name("ExpoOneBox")
@@ -34,15 +36,49 @@ public class ExpoOneBoxModule: Module {
             return self.currentStatus
         }
 
-        AsyncFunction("checkVpnPermission") { () -> Bool in
-            // iOS does not have a VPN permission dialog like Android.
-            // VPN is configured via Settings or NETunnelProviderManager.
-            return true
+        AsyncFunction("checkVpnPermission") { () async -> Bool in
+            // Check if a VPN configuration profile is already installed
+            do {
+                let managers = try await NETunnelProviderManager.loadAllFromPreferences()
+                if let manager = managers.first {
+                    self.vpnManager = manager
+                    return manager.isEnabled
+                }
+                return false
+            } catch {
+                NSLog("[ExpoOneBox] checkVpnPermission error: \(error.localizedDescription)")
+                return false
+            }
         }
 
-        AsyncFunction("requestVpnPermission") { () -> Bool in
-            // iOS does not have a VPN permission dialog like Android.
-            return true
+        AsyncFunction("requestVpnPermission") { () async -> Bool in
+            // Install or update the VPN profile. iOS will show a system "Allow VPN" prompt
+            // if no profile is installed yet, or if the user previously removed it.
+            do {
+                let managers = try await NETunnelProviderManager.loadAllFromPreferences()
+                let manager = managers.first ?? NETunnelProviderManager()
+
+                manager.localizedDescription = "OneBox VPN"
+
+                let proto = NETunnelProviderProtocol()
+                proto.providerBundleIdentifier = Bundle.main.bundleIdentifier
+                proto.serverAddress = "sing-box"
+                manager.protocolConfiguration = proto
+                manager.isEnabled = true
+
+                // This triggers the system "Allow VPN Configurations" dialog
+                try await manager.saveToPreferences()
+
+                // Re-load to get the updated state after user approval
+                try await manager.loadFromPreferences()
+
+                self.vpnManager = manager
+                NSLog("[ExpoOneBox] VPN profile installed, enabled=\(manager.isEnabled)")
+                return manager.isEnabled
+            } catch {
+                NSLog("[ExpoOneBox] requestVpnPermission error: \(error.localizedDescription)")
+                return false
+            }
         }
 
         AsyncFunction("start") { (config: String) in
@@ -73,7 +109,19 @@ public class ExpoOneBoxModule: Module {
             return
         }
 
-        let basePath = documentsDir.path
+        // Unix socket path limit is 104 bytes on macOS/iOS.
+        // Simulator container paths are very long (~170 chars), so we use /tmp/ as basePath
+        // on the simulator. On real devices, container paths are short (~60 chars).
+        let basePath: String
+        #if targetEnvironment(simulator)
+        let bundleID = Bundle.main.bundleIdentifier ?? "expo-onebox"
+        let simBase = URL(fileURLWithPath: "/tmp/\(bundleID)")
+        try? FileManager.default.createDirectory(at: simBase, withIntermediateDirectories: true)
+        basePath = simBase.path
+        #else
+        basePath = documentsDir.path
+        #endif
+
         let workingDir = documentsDir.appendingPathComponent("working")
         let tempDir = FileManager.default.temporaryDirectory
 
@@ -165,10 +213,13 @@ public class ExpoOneBoxModule: Module {
             throw error
         }
 
+        // Process config: fix cache-file path for iOS
+        let processedConfig = processConfig(config)
+
         // Start the sing-box service with the provided config
         let overrideOptions = LibboxOverrideOptions()
         do {
-            try server.startOrReloadService(config, options: overrideOptions)
+            try server.startOrReloadService(processedConfig, options: overrideOptions)
         } catch {
             updateStatus(0)
             server.close()
@@ -186,6 +237,50 @@ public class ExpoOneBoxModule: Module {
         monitor.connect()
 
         NSLog("[ExpoOneBox] Service started successfully")
+    }
+
+    // MARK: - Config Processing
+
+    /// Rewrites cache-file and rule-set paths in the config JSON
+    /// so they point to a valid iOS-writable directory.
+    private func processConfig(_ config: String) -> String {
+        guard let data = config.data(using: .utf8),
+              var json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            NSLog("[ExpoOneBox] Failed to parse config JSON, using as-is")
+            return config
+        }
+
+        let workingDir = getWorkingDir()
+        let cacheDir = workingDir + "/cache"
+        try? FileManager.default.createDirectory(atPath: cacheDir, withIntermediateDirectories: true)
+
+        // Fix experimental.cache_file.path
+        if var experimental = json["experimental"] as? [String: Any] {
+            if var cacheFile = experimental["cache_file"] as? [String: Any] {
+                if cacheFile["path"] != nil {
+                    cacheFile["path"] = cacheDir + "/cache.db"
+                    experimental["cache_file"] = cacheFile
+                    json["experimental"] = experimental
+                    NSLog("[ExpoOneBox] Rewrote cache_file.path → \(cacheDir)/cache.db")
+                }
+            }
+            json["experimental"] = experimental
+        }
+
+        guard let outputData = try? JSONSerialization.data(withJSONObject: json),
+              let outputString = String(data: outputData, encoding: .utf8)
+        else {
+            return config
+        }
+        return outputString
+    }
+
+    private func getWorkingDir() -> String {
+        if let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
+            return dir.appendingPathComponent("working").path
+        }
+        return NSTemporaryDirectory()
     }
 
     private func stopServiceInternal() {
