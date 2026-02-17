@@ -58,3 +58,5 @@ yarn-error.log
 
 # Android Studio libs
 android/libs/*
+
+/ios/Libbox.xcframework/
