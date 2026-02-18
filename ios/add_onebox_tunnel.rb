@@ -5,8 +5,32 @@
 require 'xcodeproj'
 require 'fileutils'
 
-# 获取 iOS 项目目录（从命令行参数或默认路径）
-IOS_DIR = ARGV[0] || File.expand_path('../../../ios', __dir__)
+# 路径配置 - SDK 55+ 目录结构适配
+PROJECT_ROOT = File.expand_path('../../../../', __dir__)  # 项目根目录
+APP_DIR_LEGACY = 'app'                                   # SDK < 55 的 app 目录
+APP_DIR_NEW = 'src/app'                                  # SDK 55+ 的新 app 目录
+
+# 检测当前使用的目录结构
+def detect_app_directory(root_path)
+  new_app_path = File.join(root_path, APP_DIR_NEW)
+  legacy_app_path = File.join(root_path, APP_DIR_LEGACY)
+  
+  if Dir.exist?(new_app_path)
+    return APP_DIR_NEW
+  elsif Dir.exist?(legacy_app_path)
+    return APP_DIR_LEGACY
+  else
+    puts "⚠️  Warning: Neither #{APP_DIR_NEW} nor #{APP_DIR_LEGACY} found, defaulting to #{APP_DIR_NEW}"
+    return APP_DIR_NEW
+  end
+end
+
+# 动态路径配置
+CURRENT_APP_DIR = detect_app_directory(PROJECT_ROOT)
+IOS_DIR = ARGV[0] || File.join(PROJECT_ROOT, 'ios')
+MODULES_DIR = File.join(PROJECT_ROOT, 'src', 'modules', 'expo-onebox')
+
+# 项目配置常量
 PROJECT_PATH = File.join(IOS_DIR, 'OneBoxM.xcodeproj')
 TARGET_NAME = 'OneBoxMTunnel'
 EXTENSION_BUNDLE_ID = 'cloud.oneoh.networktools.tunnel'
@@ -14,8 +38,14 @@ MAIN_APP_NAME = 'OneBoxM'
 EXTENSION_SOURCE = File.expand_path('OneBoxMTunnel', __dir__)
 LIBBOX_FRAMEWORK = File.expand_path('Libbox.xcframework', __dir__)
 
+# 扩展相关路径
+EXTENSION_RELATIVE_PATH = "../src/modules/expo-onebox/ios/#{TARGET_NAME}"
+
 puts "📦 OneBoxMTunnel Extension Installer"
 puts "=" * 50
+puts "🗂️  Project root: #{PROJECT_ROOT}"
+puts "📱 App directory: #{CURRENT_APP_DIR}"
+puts "🛠️  iOS directory: #{IOS_DIR}"
 
 # 打开项目
 project = Xcodeproj::Project.open(PROJECT_PATH)
@@ -33,7 +63,7 @@ puts "📝 Adding '#{TARGET_NAME}' Network Extension target..."
 extension_group = project.main_group.find_subpath(TARGET_NAME, true)
 extension_group.set_source_tree('<group>')
 # 设置相对于项目根目录的路径
-extension_group.set_path("../modules/expo-onebox/ios/#{TARGET_NAME}")
+extension_group.set_path(EXTENSION_RELATIVE_PATH)
 
 # 2. 添加源文件到 group
 swift_files = Dir.glob(File.join(EXTENSION_SOURCE, '*.swift')).map { |f| File.basename(f) }
@@ -73,14 +103,14 @@ end
 extension_target.build_configurations.each do |config|
   config.build_settings['PRODUCT_BUNDLE_IDENTIFIER'] = EXTENSION_BUNDLE_ID
   config.build_settings['PRODUCT_NAME'] = TARGET_NAME
-  config.build_settings['INFOPLIST_FILE'] = "../modules/expo-onebox/ios/#{TARGET_NAME}/Info.plist"
-  config.build_settings['CODE_SIGN_ENTITLEMENTS'] = "../modules/expo-onebox/ios/#{TARGET_NAME}/#{TARGET_NAME}.entitlements"
+  config.build_settings['INFOPLIST_FILE'] = "#{EXTENSION_RELATIVE_PATH}/Info.plist"
+  config.build_settings['CODE_SIGN_ENTITLEMENTS'] = "#{EXTENSION_RELATIVE_PATH}/#{TARGET_NAME}.entitlements"
   config.build_settings['SWIFT_VERSION'] = '5.0'
   config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.1'
   config.build_settings['TARGETED_DEVICE_FAMILY'] = '1,2'
   config.build_settings['SKIP_INSTALL'] = 'YES'
   config.build_settings['CODE_SIGN_STYLE'] = 'Automatic'
-  config.build_settings['FRAMEWORK_SEARCH_PATHS'] = ['$(inherited)', "\"#{File.dirname(LIBBOX_FRAMEWORK)}\""]
+  config.build_settings['FRAMEWORK_SEARCH_PATHS'] = ['$(inherited)', "\"#{EXTENSION_RELATIVE_PATH}\""]
   config.build_settings['OTHER_LDFLAGS'] = '$(inherited) -ObjC'
   config.build_settings['DEFINES_MODULE'] = 'YES'
   config.build_settings['ENABLE_USER_SCRIPT_SANDBOXING'] = 'NO'  # 重要：允许脚本运行
@@ -110,6 +140,7 @@ project.save
 
 puts "✅ Successfully added '#{TARGET_NAME}' target!"
 puts "✅ Extension will be embedded in main app"
+puts "✅ Current app directory structure: #{CURRENT_APP_DIR}"
 puts "\n📝 Next steps:"
 puts "   1. Open Xcode and set signing team for #{TARGET_NAME} target"
 puts "   2. Run: npx expo run:ios --device"
