@@ -10,6 +10,8 @@ declare class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
   checkVpnPermission(): Promise<boolean>;
   requestVpnPermission(): Promise<boolean>;
   getStatus(): number;
+  setCoreLogEnabled(enabled: boolean): void;
+  getCoreLogEnabled(): boolean
 }
 
 // This call loads the native module object from the JSI.
