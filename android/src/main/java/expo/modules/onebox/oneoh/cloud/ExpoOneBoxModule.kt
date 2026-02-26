@@ -201,7 +201,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
             options.addCommand(Libbox.CommandGroup)
 
             val handler = object : CommandClientHandler {
-                private fun settle(all: List<String>, now: String) {
+                private fun settle(all: List<Map<String, Any>>, now: String) {
                     if (!settled) {
                         settled = true
                         rawClient?.runCatching { disconnect() }
@@ -216,7 +216,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
                 }
 
                 override fun writeGroups(message: OutboundGroupIterator?) {
-                    val all = mutableListOf<String>()
+                    val all = mutableListOf<Map<String, Any>>()
                     var now = ""
                     while (message?.hasNext() == true) {
                         val group = message.next()
@@ -224,7 +224,8 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
                             now = group.selected ?: ""
                             val items = group.getItems()
                             while (items?.hasNext() == true) {
-                                all.add(items.next().tag)
+                                val item = items.next()
+                                all.add(mapOf("tag" to item.tag, "delay" to item.urlTestDelay.toInt()))
                             }
                             break
                         }
@@ -249,7 +250,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
                 if (!settled) {
                     settled = true
                     client.runCatching { disconnect() }
-                    promise.resolve(mapOf("all" to emptyList<String>(), "now" to ""))
+                    promise.resolve(mapOf("all" to emptyList<Map<String, Any>>(), "now" to ""))
                 }
             }, 5000)
 
@@ -260,7 +261,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
                 } catch (e: Exception) {
                     if (!settled) {
                         settled = true
-                        promise.resolve(mapOf("all" to emptyList<String>(), "now" to ""))
+                        promise.resolve(mapOf("all" to emptyList<Map<String, Any>>(), "now" to ""))
                     }
                 }
             }.start()

@@ -62,11 +62,11 @@ export function addTrafficUpdateListener(callback: (event: TrafficUpdateEventPay
 }
 
 /**
- * iOS: 通过 libbox CommandClient + LibboxCommandGroup 从 Network Extension 进程
- * 查询 ExitGateway 代理组的节点列表和当前选中节点。
- * @returns { all: string[], now: string }
+ * 通过 libbox CommandClient IPC 查询 ExitGateway 代理组的节点列表、当前选中节点及延迟信息。
+ * @returns { all: Array<{ tag: string; delay: number }>, now: string }
+ *   - `delay`: URL 测速延迟（毫秒），0 表示尚未测速
  */
-export function GetProxyNodes(): Promise<{ all: string[]; now: string }> {
+export function GetProxyNodes(): Promise<{ all: { tag: string; delay: number }[]; now: string }> {
     return ExpoOneBoxModule.getProxyNodes();
 }
 

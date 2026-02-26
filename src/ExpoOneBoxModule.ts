@@ -12,7 +12,7 @@ declare class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
   getStatus(): number;
   setCoreLogEnabled(enabled: boolean): void;
   getCoreLogEnabled(): boolean
-  getProxyNodes(): Promise<{ all: string[]; now: string }>;
+  getProxyNodes(): Promise<{ all: { tag: string; delay: number }[]; now: string }>;
   selectProxyNode(node: string): Promise<boolean>;
 }
 

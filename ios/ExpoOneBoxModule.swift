@@ -32,23 +32,23 @@ private class OneShotGroupQueryHandler: NSObject, LibboxCommandClientHandlerProt
     }
 
     func fail(_ error: Error) { settle(.failure(error)) }
-    func timeout() { settle(.success(["all": [] as [String], "now": ""])) }
+    func timeout() { settle(.success(["all": [] as [[String: Any]], "now": ""])) }
 
     func connected() {}
     func disconnected(_ message: String?) {
-        settle(.success(["all": [] as [String], "now": ""]))
+        settle(.success(["all": [] as [[String: Any]], "now": ""]))
     }
 
     func writeGroups(_ message: (any LibboxOutboundGroupIteratorProtocol)?) {
         guard let message else { return }
-        var all: [String] = []
+        var all: [[String: Any]] = []
         var now = ""
         while let group = message.next() {
             if group.tag == "ExitGateway" {
                 now = group.selected
                 if let items = group.getItems() {
                     while let item = items.next() {
-                        all.append(item.tag)
+                        all.append(["tag": item.tag, "delay": Int(item.urlTestDelay)])
                     }
                 }
                 break
