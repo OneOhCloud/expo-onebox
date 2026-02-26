@@ -15,6 +15,9 @@ public class ExpoOneBoxModule: Module {
     private var isInitialized = false
     private var statusObserver: NSObjectProtocol?
     internal var coreLogEnabled = false
+    // Log polling
+    private var logPoller: Timer?
+    private var logFileReadOffset: UInt64 = 0
 
     public func definition() -> ModuleDefinition {
         Name("ExpoOneBox")
@@ -24,6 +27,11 @@ public class ExpoOneBoxModule: Module {
         OnCreate {
             self.initializeLibbox()
             self.observeVPNStatus()
+            // Sync initial VPN state so JS gets correct status on app launch
+            // (NEVPNStatusDidChange doesn't fire on launch if VPN was already running)
+            Task {
+                await self.syncInitialVPNStatus()
+            }
         }
 
         OnDestroy {
@@ -100,8 +108,23 @@ public class ExpoOneBoxModule: Module {
 
     // MARK: - Initialization
 
-    private func initializeLibbox() {
-        guard !isInitialized else { return }
+    /// Sync current VPN state on module creation.
+    /// NEVPNStatusDidChange does NOT fire on app launch if VPN was already running,
+    /// so we must load managers and set the initial status ourselves.
+    private func syncInitialVPNStatus() async {
+        do {
+            let managers = try await NETunnelProviderManager.loadAllFromPreferences()
+            guard let manager = managers.first else { return }
+            self.vpnManager = manager
+            DispatchQueue.main.async {
+                self.handleVPNStatusChange(manager.connection.status)
+            }
+        } catch {
+            NSLog("[ExpoOneBox] syncInitialVPNStatus error: \(error.localizedDescription)")
+        }
+    }
+
+    private func initializeLibbox() {        guard !isInitialized else { return }
 
         // Use App Group shared directory — must match extension's FilePath
         guard let sharedDir = FileManager.default.containerURL(
@@ -266,10 +289,12 @@ public class ExpoOneBoxModule: Module {
     private func handleVPNStatusChange(_ status: NEVPNStatus) {
         switch status {
         case .invalid:
+            stopLogPolling()
             updateStatus(0)
         case .disconnected:
             trafficMonitor?.disconnect()
             trafficMonitor = nil
+            stopLogPolling()
             updateStatus(0)
             // 读取扩展日志以了解为什么断开连接
             let logs = readExtensionLogs()
@@ -282,6 +307,7 @@ public class ExpoOneBoxModule: Module {
         case .connected:
             updateStatus(2)
             startTrafficMonitor()
+            startLogPolling()
         case .reasserting:
             updateStatus(1)
         case .disconnecting:
@@ -299,6 +325,75 @@ public class ExpoOneBoxModule: Module {
         let monitor = TrafficMonitor(module: self)
         self.trafficMonitor = monitor
         monitor.connect()
+    }
+
+    // MARK: - Log Polling
+
+    private var logFilePath: URL? {
+        guard let sharedDir = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: Self.appGroupID
+        ) else { return nil }
+        return sharedDir
+            .appendingPathComponent("Library", isDirectory: true)
+            .appendingPathComponent("Caches", isDirectory: true)
+            .appendingPathComponent("stderr.log")
+    }
+
+    private func startLogPolling() {
+        guard logPoller == nil else { return }
+        // Reset offset to end of file so we only tail new lines written after connection
+        if let path = logFilePath,
+           let attrs = try? FileManager.default.attributesOfItem(atPath: path.path),
+           let fileSize = attrs[.size] as? UInt64 {
+            logFileReadOffset = fileSize
+        } else {
+            logFileReadOffset = 0
+        }
+        logPoller = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            self?.pollLogFile()
+        }
+        NSLog("[ExpoOneBox] Log polling started")
+    }
+
+    private func stopLogPolling() {
+        logPoller?.invalidate()
+        logPoller = nil
+        logFileReadOffset = 0
+        NSLog("[ExpoOneBox] Log polling stopped")
+    }
+
+    private func pollLogFile() {
+        guard let path = logFilePath else { return }
+        guard FileManager.default.fileExists(atPath: path.path) else { return }
+
+        guard let fileHandle = try? FileHandle(forReadingFrom: path) else { return }
+        defer { try? fileHandle.close() }
+
+        let fileSize: UInt64
+        if let attrs = try? FileManager.default.attributesOfItem(atPath: path.path),
+           let s = attrs[.size] as? UInt64 {
+            fileSize = s
+        } else { return }
+
+        // Handle log rotation (file shrank)
+        if fileSize < logFileReadOffset {
+            logFileReadOffset = 0
+        }
+        guard fileSize > logFileReadOffset else { return }
+
+        try? fileHandle.seek(toOffset: logFileReadOffset)
+        let newData = fileHandle.readDataToEndOfFile()
+        logFileReadOffset = fileSize
+
+        guard !newData.isEmpty,
+              let text = String(data: newData, encoding: .utf8) else { return }
+
+        let lines = text.components(separatedBy: "\n")
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            sendLog(message: trimmed)
+        }
     }
 
     // MARK: - Extension Logs
@@ -334,6 +429,7 @@ public class ExpoOneBoxModule: Module {
             NotificationCenter.default.removeObserver(observer)
             statusObserver = nil
         }
+        stopLogPolling()
         trafficMonitor?.disconnect()
         trafficMonitor = nil
     }
