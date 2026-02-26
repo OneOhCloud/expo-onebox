@@ -1,0 +1,9 @@
+{
+    "name": "expo-onebox",
+    "version": "1.0.0",
+    "description": "Expo native module for OneBoxM",
+    "license": "GPL-3.0-only",
+    "author": "OneOh Cloud",
+    "homepage": "https://github.com/OneOhCloud/expo-onebox",
+    "main": "index.ts"
+}
