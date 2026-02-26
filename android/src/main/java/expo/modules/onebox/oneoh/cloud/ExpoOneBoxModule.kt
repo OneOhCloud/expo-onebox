@@ -21,8 +21,15 @@ import expo.modules.onebox.oneoh.cloud.helper.Action
 import expo.modules.onebox.oneoh.cloud.helper.Alert
 import expo.modules.onebox.oneoh.cloud.helper.Bugs
 import expo.modules.onebox.oneoh.cloud.helper.Status
+import io.nekohasekai.libbox.CommandClientHandler
+import io.nekohasekai.libbox.CommandClientOptions
+import io.nekohasekai.libbox.ConnectionEvents
 import io.nekohasekai.libbox.Libbox
+import io.nekohasekai.libbox.LogIterator
+import io.nekohasekai.libbox.OutboundGroupIterator
 import io.nekohasekai.libbox.SetupOptions
+import io.nekohasekai.libbox.StatusMessage
+import io.nekohasekai.libbox.StringIterator
 import kotlinx.coroutines.DelicateCoroutinesApi
 import org.json.JSONObject
 import java.io.File
@@ -183,6 +190,92 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
                 Intent(Action.SERVICE_CLOSE).setPackage(context.packageName)
             )
             Log.d(TAG, "服务停止命令已发送")
+        }
+
+        // ---- getProxyNodes: 通过 libbox CommandClient IPC 获取 ExitGateway 节点列表 ----
+        AsyncFunction("getProxyNodes") { promise: Promise ->
+            var settled = false
+            var rawClient: io.nekohasekai.libbox.CommandClient? = null
+
+            val options = CommandClientOptions()
+            options.addCommand(Libbox.CommandGroup)
+
+            val handler = object : CommandClientHandler {
+                private fun settle(all: List<String>, now: String) {
+                    if (!settled) {
+                        settled = true
+                        rawClient?.runCatching { disconnect() }
+                        promise.resolve(mapOf("all" to all, "now" to now))
+                    }
+                }
+
+                override fun connected() {}
+
+                override fun disconnected(message: String?) {
+                    settle(emptyList(), "")
+                }
+
+                override fun writeGroups(message: OutboundGroupIterator?) {
+                    val all = mutableListOf<String>()
+                    var now = ""
+                    while (message?.hasNext() == true) {
+                        val group = message.next()
+                        if (group.tag == "ExitGateway") {
+                            now = group.selected ?: ""
+                            val items = group.getItems()
+                            while (items?.hasNext() == true) {
+                                all.add(items.next().tag)
+                            }
+                            break
+                        }
+                    }
+                    settle(all, now)
+                }
+
+                override fun writeStatus(message: StatusMessage?) {}
+                override fun writeLogs(messageList: LogIterator?) {}
+                override fun clearLogs() {}
+                override fun setDefaultLogLevel(level: Int) {}
+                override fun initializeClashMode(modeList: StringIterator?, currentMode: String?) {}
+                override fun updateClashMode(newMode: String?) {}
+                override fun writeConnectionEvents(events: ConnectionEvents?) {}
+            }
+
+            val client = io.nekohasekai.libbox.CommandClient(handler, options)
+            rawClient = client
+
+            // 5 秒超时保护
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                if (!settled) {
+                    settled = true
+                    client.runCatching { disconnect() }
+                    promise.resolve(mapOf("all" to emptyList<String>(), "now" to ""))
+                }
+            }, 5000)
+
+            // 在后台线程中连接
+            Thread {
+                try {
+                    client.connect()
+                } catch (e: Exception) {
+                    if (!settled) {
+                        settled = true
+                        promise.resolve(mapOf("all" to emptyList<String>(), "now" to ""))
+                    }
+                }
+            }.start()
+        }
+
+        // ---- selectProxyNode: 通过 libbox StandaloneCommandClient 选择节点 ----
+        AsyncFunction("selectProxyNode") { node: String ->
+            try {
+                val client = Libbox.newStandaloneCommandClient()
+                client?.selectOutbound("ExitGateway", node)
+                true
+            } catch (e: Exception) {
+                Log.w(TAG, "selectProxyNode failed: ${e.message}")
+                false
+            }
         }
 
         Function("getLibBoxVersion") {

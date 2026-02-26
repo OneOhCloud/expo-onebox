@@ -60,3 +60,20 @@ export function addLogListener(callback: (event: { message: string }) => void): 
 export function addTrafficUpdateListener(callback: (event: TrafficUpdateEventPayload) => void): EventSubscription {
     return ExpoOneBoxModule.addListener('onTrafficUpdate', callback);
 }
+
+/**
+ * iOS: 通过 libbox CommandClient + LibboxCommandGroup 从 Network Extension 进程
+ * 查询 ExitGateway 代理组的节点列表和当前选中节点。
+ * @returns { all: string[], now: string }
+ */
+export function GetProxyNodes(): Promise<{ all: string[]; now: string }> {
+    return ExpoOneBoxModule.getProxyNodes();
+}
+
+/**
+ * iOS: 通过 LibboxNewStandaloneCommandClient().selectOutbound 切换节点。
+ * @param node  节点 tag 名称
+ */
+export function SelectProxyNode(node: string): Promise<boolean> {
+    return ExpoOneBoxModule.selectProxyNode(node);
+}

@@ -1,6 +1,71 @@
 import ExpoModulesCore
 import Libbox
-import NetworkExtension
+@preconcurrency import NetworkExtension
+
+// MARK: - One-shot proxy group query handler
+
+/// Connects to the libbox CommandServer, waits for the first CommandGroup update,
+/// extracts ExitGateway group info, then disconnects.
+private class OneShotGroupQueryHandler: NSObject, LibboxCommandClientHandlerProtocol {
+    weak var client: LibboxCommandClient?
+    private let continuation: CheckedContinuation<[String: Any], Error>
+    private let lock = NSLock()
+    private var settled = false
+
+    init(continuation: CheckedContinuation<[String: Any], Error>) {
+        self.continuation = continuation
+    }
+
+    private func settle(_ result: Result<[String: Any], Error>) {
+        lock.lock()
+        let wasSettled = settled
+        settled = true
+        lock.unlock()
+        guard !wasSettled else { return }
+        DispatchQueue.global().async { [weak self] in
+            _ = try? self?.client?.disconnect()
+        }
+        switch result {
+        case .success(let val): continuation.resume(returning: val)
+        case .failure(let err): continuation.resume(throwing: err)
+        }
+    }
+
+    func fail(_ error: Error) { settle(.failure(error)) }
+    func timeout() { settle(.success(["all": [] as [String], "now": ""])) }
+
+    func connected() {}
+    func disconnected(_ message: String?) {
+        settle(.success(["all": [] as [String], "now": ""]))
+    }
+
+    func writeGroups(_ message: (any LibboxOutboundGroupIteratorProtocol)?) {
+        guard let message else { return }
+        var all: [String] = []
+        var now = ""
+        while let group = message.next() {
+            if group.tag == "ExitGateway" {
+                now = group.selected
+                if let items = group.getItems() {
+                    while let item = items.next() {
+                        all.append(item.tag)
+                    }
+                }
+                break
+            }
+        }
+        settle(.success(["all": all, "now": now]))
+    }
+
+    // Unused callbacks — libbox runtime checks respondsToSelector before calling
+    func writeStatus(_ message: LibboxStatusMessage?) {}
+    func writeLogs(_ messageList: (any LibboxLogIteratorProtocol)?) {}
+    func clearLogs() {}
+    func setDefaultLogLevel(_ level: Int32) {}
+    func initializeClashMode(_ modeList: (any LibboxStringIteratorProtocol)?, currentMode: String?) {}
+    func updateClashMode(_ newMode: String?) {}
+    func write(_ events: LibboxConnectionEvents?) {}
+}
 
 public class ExpoOneBoxModule: Module {
 
@@ -94,6 +159,52 @@ public class ExpoOneBoxModule: Module {
 
         AsyncFunction("getExtensionLogs") { () -> String in
             return self.readExtensionLogs()
+        }
+
+        // Query the libbox CommandServer (in the Network Extension) for the
+        // ExitGateway selector group — returns { all: [String], now: String }.
+        // Uses LibboxCommandClient + LibboxCommandGroup subscription.
+        AsyncFunction("getProxyNodes") { () async throws -> [String: Any] in
+            return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<[String: Any], Error>) in
+                let handler = OneShotGroupQueryHandler(continuation: continuation)
+
+                let options = LibboxCommandClientOptions()
+                options.addCommand(LibboxCommandGroup)
+
+                guard let client = LibboxNewCommandClient(handler, options) else {
+                    continuation.resume(throwing: NSError(
+                        domain: "ExpoOneBox", code: -1,
+                        userInfo: [NSLocalizedDescriptionKey: "Failed to create CommandClient"]))
+                    return
+                }
+                handler.client = client
+
+                // Timeout after 5 s in case CommandServer is not ready
+                DispatchQueue.global().asyncAfter(deadline: .now() + 5) {
+                    handler.timeout()
+                }
+
+                DispatchQueue.global(qos: .utility).async {
+                    do {
+                        try client.connect()
+                    } catch {
+                        handler.fail(error)
+                    }
+                }
+            }
+        }
+
+        // Select a proxy outbound in the ExitGateway selector group
+        // via LibboxNewStandaloneCommandClient (same IPC used by stopVPN).
+        AsyncFunction("selectProxyNode") { (node: String) async throws -> Bool in
+            return try await Task.detached(priority: .userInitiated) {
+                guard let client = LibboxNewStandaloneCommandClient() else {
+                    throw NSError(domain: "ExpoOneBox", code: -1,
+                                  userInfo: [NSLocalizedDescriptionKey: "Failed to create standalone client"])
+                }
+                try client.selectOutbound("ExitGateway", outboundTag: node)
+                return true
+            }.value
         }
 
         View(ExpoOneBoxView.self) {
@@ -192,7 +303,7 @@ public class ExpoOneBoxModule: Module {
     // MARK: - Prepare Options (following ExtensionProfile pattern)
 
     private func prepareStartOptions(config: String) -> [String: NSObject] {
-        var options: [String: NSObject] = [
+        let options: [String: NSObject] = [
             "configContent": NSString(string: config),
             "systemProxyEnabled": NSNumber(value: true),
             "excludeDefaultRoute": NSNumber(value: false),
