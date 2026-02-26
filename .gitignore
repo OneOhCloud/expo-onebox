@@ -3,8 +3,7 @@
 # dependencies
 node_modules/
 
-ios/Libbox.xcframework
-android/Libbox.aar
+
 
 # Expo
 .expo/
@@ -42,7 +41,7 @@ yarn-error.*
 app-example
 
 # generated native folders
-/ios
-/android
 src/database/config.ts
 src/modules/**
+ios/Libbox.xcframework
+android/libs/**
