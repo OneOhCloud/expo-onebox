@@ -145,6 +145,18 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
             return@Function coreLogEnabled
         }
 
+        // Returns the last startup error written to startup_error.txt by the VPN service.
+        // Empty string means no error (or last start succeeded).
+        // JS layer calls this when status transitions STARTING → STOPPED.
+        Function("getStartError") {
+            return@Function try {
+                val file = java.io.File(getWorkingDir(), "startup_error.txt")
+                if (file.exists()) file.readText().trim() else ""
+            } catch (e: Exception) {
+                ""
+            }
+        }
+
         AsyncFunction("checkVpnPermission") {
             val vpnIntent = VpnService.prepare(context)
             return@AsyncFunction vpnIntent == null

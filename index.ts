@@ -31,6 +31,15 @@ export function GetStatus(): number {
     return ExpoOneBoxModule.getStatus();
 }
 
+/**
+ * 同步读取最近一次启动失败的错误信息。
+ * 空字符串表示无错误（或上次启动成功）。
+ * 在 status 从 STARTING 变为 STOPPED 后调用。
+ */
+export function GetStartError(): string {
+    return ExpoOneBoxModule.getStartError();
+}
+
 export function SetCoreLogEnabled(enabled: boolean): void {
     ExpoOneBoxModule.setCoreLogEnabled(enabled);
 }

@@ -34,6 +34,11 @@ class PlatformInterfaceImpl: NSObject, LibboxPlatformInterfaceProtocol, LibboxCo
         false
     }
 
+    func DisableColors() -> Bool {
+        true
+        
+    }
+
     func autoDetectControl(_ fd: Int32) throws {
         // Not applicable without Network Extension
     }

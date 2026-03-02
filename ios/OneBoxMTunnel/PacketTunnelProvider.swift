@@ -69,6 +69,26 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         throw ExtensionStartupError("(packet-tunnel) error: missing start options")
     }
 
+// MARK: - Shared startup error file
+
+    /// Path to the shared startup_error.txt in App Group
+    private static var startupErrorFileURL: URL {
+        FilePath.sharedDirectory.appendingPathComponent("startup_error.txt")
+    }
+
+    /// Write a startup error message to the shared file so the main app can read it.
+    private static func writeStartupError(_ message: String) {
+        let url = startupErrorFileURL
+        NSLog("Writing startup error to file: \(message)")
+        try? message.write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    /// Clear the startup error file (called on successful start).
+    private static func clearStartupError() {
+        let url = startupErrorFileURL
+        try? "".write(to: url, atomically: true, encoding: .utf8)
+    }
+
     override func startTunnel(options startOptions: [String: NSObject]?) async throws {
         let basePath = FilePath.sharedDirectory.relativePath
         let workingPath = FilePath.workingDirectory.relativePath
@@ -174,9 +194,14 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         do {
             try commandServer!.startOrReloadService(configContent, options: options)
             logger.log("Service started/reloaded successfully")
+            // Clear any previous error so JS gets a clean state
+            PacketTunnelProvider.clearStartupError()
         } catch {
+            let msg = "(packet-tunnel) error: start service: \(error.localizedDescription)"
+            // Write to shared App Group file — main app reads this via getStartError()
+            PacketTunnelProvider.writeStartupError(msg)
             logger.error("startOrReloadService failed: \(error.localizedDescription)")
-            throw ExtensionStartupError("(packet-tunnel) error: start service: \(error.localizedDescription)")
+            throw ExtensionStartupError(msg)
         }
     }
 

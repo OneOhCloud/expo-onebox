@@ -17,8 +17,8 @@ Pod::Spec.new do |s|
 
   s.dependency 'ExpoModulesCore'
 
-  # Only include Swift/ObjC files at this level (not inside Libbox.xcframework)
-  s.source_files = "*.{h,m,mm,swift,hpp,cpp}"
+  # Main module files + core/ helpers (moved out of root to keep ExpoOneBox* files at root)
+  s.source_files = ["*.{h,m,mm,swift,hpp,cpp}", "core/*.{h,m,mm,swift,hpp,cpp}"]
 
   # Include the Libbox.xcframework (sing-box Go library)
   s.vendored_frameworks = "Libbox.xcframework"

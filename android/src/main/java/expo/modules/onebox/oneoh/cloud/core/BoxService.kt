@@ -72,6 +72,20 @@ class BoxService(
         }
     }
 
+    // ==================== Startup error file ====================
+
+    /** Shared startup_error.txt — written on failure, cleared on success. */
+    private val startupErrorFile: java.io.File
+        get() = java.io.File(service.getExternalFilesDir(null) ?: service.filesDir, "startup_error.txt")
+
+    private fun writeStartupError(message: String) {
+        try { startupErrorFile.writeText(message) } catch (_: Exception) {}
+    }
+
+    private fun clearStartupError() {
+        try { startupErrorFile.writeText("") } catch (_: Exception) {}
+    }
+
     // ==================== 服务控制 ====================
 
     private fun startCommandServer() {
@@ -116,10 +130,12 @@ class BoxService(
                 )
             } catch (e: Exception) {
                 Log.e(TAG, "[binary] startOrReloadService failed", e)
+                writeStartupError("[binary] ${e.message ?: "unknown error"}")
                 stopAndAlert(Alert.CreateService, "[binary] ${e.message}")
                 return
             }
 
+            clearStartupError()
             status.postValue(Status.Started)
             withContext(Dispatchers.Main) {
                 notification.show(serverName, R.string.status_started)

@@ -60,6 +60,10 @@ class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
   getStatus(): number {
     return VPN_STATUS.STOPPED;
   }
+
+  getStartError(): string {
+    return '';
+  }
 }
 
 export default registerWebModule(ExpoOneBoxModule, 'ExpoOneBoxModule');

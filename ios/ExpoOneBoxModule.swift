@@ -161,6 +161,13 @@ public class ExpoOneBoxModule: Module {
             return self.readExtensionLogs()
         }
 
+        // Returns the last startup error written by the Network Extension to the shared
+        // App Group file. Empty string means no error (or last start succeeded).
+        // JS layer calls this when status transitions STARTING → STOPPED.
+        Function("getStartError") { () -> String in
+            return self.readStartupError()
+        }
+
         // Query the libbox CommandServer (in the Network Extension) for the
         // ExitGateway selector group — returns { all: [String], now: String }.
         // Uses LibboxCommandClient + LibboxCommandGroup subscription.
@@ -407,12 +414,7 @@ public class ExpoOneBoxModule: Module {
             trafficMonitor = nil
             stopLogPolling()
             updateStatus(0)
-            // 读取扩展日志以了解为什么断开连接
-            let logs = readExtensionLogs()
-            if !logs.isEmpty {
-                sendLog(message: "=== Extension Logs ===")
-                sendLog(message: logs)
-            }
+            // JS 层在收到 STOPPED 状态后主动调用 getStartError() 查询原因，无需在此推送
         case .connecting:
             updateStatus(1)
         case .connected:
@@ -505,6 +507,20 @@ public class ExpoOneBoxModule: Module {
             guard !trimmed.isEmpty else { continue }
             sendLog(message: trimmed)
         }
+    }
+
+    // MARK: - Startup Error File
+
+    /// Read the shared startup_error.txt written by the Network Extension on failure.
+    /// Returns empty string if the file doesn't exist or the last start succeeded.
+    private func readStartupError() -> String {
+        guard let sharedDir = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: Self.appGroupID
+        ) else { return "" }
+        let errorFilePath = sharedDir.appendingPathComponent("startup_error.txt")
+        guard FileManager.default.fileExists(atPath: errorFilePath.path) else { return "" }
+        let content = (try? String(contentsOf: errorFilePath, encoding: .utf8)) ?? ""
+        return content.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     // MARK: - Extension Logs

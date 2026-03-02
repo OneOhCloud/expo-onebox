@@ -10,6 +10,8 @@ declare class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
   checkVpnPermission(): Promise<boolean>;
   requestVpnPermission(): Promise<boolean>;
   getStatus(): number;
+  /** Sync read of the last startup error written by the Extension/Service. Empty = no error. */
+  getStartError(): string;
   setCoreLogEnabled(enabled: boolean): void;
   getCoreLogEnabled(): boolean
   getProxyNodes(): Promise<{ all: { tag: string; delay: number }[]; now: string }>;
