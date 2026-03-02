@@ -191,8 +191,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
             val workingDir = getWorkingDir().absolutePath
             val cachePath = "$workingDir/cache/tun-cache-rule-v1.db"
 
-
-
+            isStartingUp = true
             startVPNService(processedConfig)
         }
 

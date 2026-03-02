@@ -226,6 +226,10 @@ class ExtensionPlatformInterface: NSObject, LibboxPlatformInterfaceProtocol, Lib
         false
     }
 
+    func DisableColors() -> Bool {
+        true
+    }
+
     func autoDetectControl(_ fd: Int32) throws {}
 
     func findConnectionOwner(_ ipProtocol: Int32, sourceAddress: String?, sourcePort: Int32, destinationAddress: String?, destinationPort: Int32) throws -> LibboxConnectionOwner {
