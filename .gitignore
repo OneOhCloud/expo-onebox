@@ -39,6 +39,7 @@ yarn-error.*
 *.tsbuildinfo
 
 app-example
+helper/sing-box
 
 # generated native folders
 src/database/config.ts
