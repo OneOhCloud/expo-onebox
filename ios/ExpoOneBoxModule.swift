@@ -84,9 +84,6 @@ public class ExpoOneBoxModule: Module {
     private var isInitialized = false
     private var statusObserver: NSObjectProtocol?
     internal var coreLogEnabled = false
-    // Log polling
-    private var logPoller: Timer?
-    private var logFileReadOffset: UInt64 = 0
 
     public func definition() -> ModuleDefinition {
         Name("ExpoOneBox")
@@ -416,7 +413,6 @@ public class ExpoOneBoxModule: Module {
         case .invalid:
             NSLog("[ExpoOneBox] VPN status: invalid")
             isStartingUp = false
-            stopLogPolling()
             updateStatus(0)
         case .disconnected:
             // 关键：使用 isStartingUp 标记而非 currentStatus==1 来判断启动失败。
@@ -427,7 +423,6 @@ public class ExpoOneBoxModule: Module {
             isStartingUp = false
             trafficMonitor?.disconnect()
             trafficMonitor = nil
-            stopLogPolling()
             updateStatus(0)
             // 主动检测启动失败：从共享文件读取错误并推送给 JS。
             if wasStarting {
@@ -455,7 +450,6 @@ public class ExpoOneBoxModule: Module {
             isStartingUp = false
             updateStatus(2)
             startTrafficMonitor()
-            startLogPolling()
         case .reasserting:
             updateStatus(1)
         case .disconnecting:
@@ -473,75 +467,6 @@ public class ExpoOneBoxModule: Module {
         let monitor = TrafficMonitor(module: self)
         self.trafficMonitor = monitor
         monitor.connect()
-    }
-
-    // MARK: - Log Polling
-
-    private var logFilePath: URL? {
-        guard let sharedDir = FileManager.default.containerURL(
-            forSecurityApplicationGroupIdentifier: Self.appGroupID
-        ) else { return nil }
-        return sharedDir
-            .appendingPathComponent("Library", isDirectory: true)
-            .appendingPathComponent("Caches", isDirectory: true)
-            .appendingPathComponent("stderr.log")
-    }
-
-    private func startLogPolling() {
-        guard logPoller == nil else { return }
-        // Reset offset to end of file so we only tail new lines written after connection
-        if let path = logFilePath,
-           let attrs = try? FileManager.default.attributesOfItem(atPath: path.path),
-           let fileSize = attrs[.size] as? UInt64 {
-            logFileReadOffset = fileSize
-        } else {
-            logFileReadOffset = 0
-        }
-        logPoller = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            self?.pollLogFile()
-        }
-        NSLog("[ExpoOneBox] Log polling started")
-    }
-
-    private func stopLogPolling() {
-        logPoller?.invalidate()
-        logPoller = nil
-        logFileReadOffset = 0
-        NSLog("[ExpoOneBox] Log polling stopped")
-    }
-
-    private func pollLogFile() {
-        guard let path = logFilePath else { return }
-        guard FileManager.default.fileExists(atPath: path.path) else { return }
-
-        guard let fileHandle = try? FileHandle(forReadingFrom: path) else { return }
-        defer { try? fileHandle.close() }
-
-        let fileSize: UInt64
-        if let attrs = try? FileManager.default.attributesOfItem(atPath: path.path),
-           let s = attrs[.size] as? UInt64 {
-            fileSize = s
-        } else { return }
-
-        // Handle log rotation (file shrank)
-        if fileSize < logFileReadOffset {
-            logFileReadOffset = 0
-        }
-        guard fileSize > logFileReadOffset else { return }
-
-        try? fileHandle.seek(toOffset: logFileReadOffset)
-        let newData = fileHandle.readDataToEndOfFile()
-        logFileReadOffset = fileSize
-
-        guard !newData.isEmpty,
-              let text = String(data: newData, encoding: .utf8) else { return }
-
-        let lines = text.components(separatedBy: "\n")
-        for line in lines {
-            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { continue }
-            sendLog(message: trimmed)
-        }
     }
 
     // MARK: - Startup Error File
@@ -591,7 +516,6 @@ public class ExpoOneBoxModule: Module {
             NotificationCenter.default.removeObserver(observer)
             statusObserver = nil
         }
-        stopLogPolling()
         trafficMonitor?.disconnect()
         trafficMonitor = nil
     }
