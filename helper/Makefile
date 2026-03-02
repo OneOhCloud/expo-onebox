@@ -7,10 +7,10 @@ CRONET_GO_VERSION := $(shell curl -sL https://api.github.com/repos/SagerNet/cron
 CRONET_GO_TAG := $(notdir $(CRONET_GO_VERSION))
 
 
-#  ../android/src/libs 删除并重新创建
+#  ../android/libs 删除并重新创建
 clean_native:
-	rm -rf ../android/src/libs
-	mkdir -p ../android/src/libs
+	rm -rf ../android/libs
+	mkdir -p ../android/libs
 	rm -rf ../ios/Libbox.xcframework
 
 

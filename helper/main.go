@@ -146,7 +146,7 @@ func buildAndroidVariant(config AndroidBuildConfig, bindTarget string) {
 		log.Fatal(err)
 	}
 
-	copyPath := filepath.Join("..", "..", "android", "src", "libs")
+	copyPath := filepath.Join("..", "..", "android", "libs")
 	if rw.IsDir(copyPath) {
 		copyPath, _ = filepath.Abs(copyPath)
 		err = rw.CopyFile(config.OutputName, filepath.Join(copyPath, config.OutputName))
