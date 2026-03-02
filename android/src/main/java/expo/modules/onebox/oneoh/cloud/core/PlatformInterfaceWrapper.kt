@@ -80,8 +80,7 @@ interface PlatformInterfaceWrapper : PlatformInterface {
     override fun closeDefaultInterfaceMonitor(listener: InterfaceUpdateListener) {
         DefaultNetworkMonitor.setListener(null)
     }
-     
-    override fun DisableColors(): Boolean = true
+    
 
     override fun getInterfaces(): NetworkInterfaceIterator {
         val networks = connectivity.allNetworks

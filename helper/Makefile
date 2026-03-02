@@ -35,6 +35,7 @@ build:
 	$(MAKE) clone_sing_box
 	$(MAKE) download_cronet
 	cd sing-box && make lib_apple && make lib_android
+	mv sing-box/libbox-sources.jar ../android/libs/
 
 # 测试
 test:

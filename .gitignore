@@ -47,3 +47,4 @@ src/modules/**
 ios/Libbox.xcframework
 android/libs/**
 android/build/
+android/.gradle
