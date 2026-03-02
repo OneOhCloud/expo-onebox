@@ -59,7 +59,15 @@ private class OneShotGroupQueryHandler: NSObject, LibboxCommandClientHandlerProt
 
     // Unused callbacks — libbox runtime checks respondsToSelector before calling
     func writeStatus(_ message: LibboxStatusMessage?) {}
-    func writeLogs(_ messageList: (any LibboxLogIteratorProtocol)?) {}
+    func writeLogs(_ messageList: (any LibboxLogIteratorProtocol)?) {
+        // print logs if coreLogEnabled, otherwise ignore
+        guard let messageList else { return }
+        var logs: [String] = []
+        while let msg = messageList.next() {
+            NSLog("[sing-box] %@", msg.message)
+        }            
+    }
+    
     func clearLogs() {}
     func setDefaultLogLevel(_ level: Int32) {}
     func initializeClashMode(_ modeList: (any LibboxStringIteratorProtocol)?, currentMode: String?) {}

@@ -16,7 +16,7 @@ clean_native:
 
 
 # 克隆到当前目录
-clone:	
+clone_sing_box:	
 	git clone --depth 1 --branch $(SING_BOX_TAG) https://github.com/SagerNet/sing-box.git
 	cp main.go sing-box/cmd/internal/build_libbox
 
@@ -29,7 +29,11 @@ download_cronet:
 	| while read url; do curl -L -o sing-box/$$(basename "$$url") "$$url"; done
 
 
-build: clean_native clone download_cronet
+build:
+	rm -rf sing-box
+	$(MAKE) clean_native
+	$(MAKE) clone_sing_box
+	$(MAKE) download_cronet
 	cd sing-box && make lib_apple && make lib_android
 
 # 测试
