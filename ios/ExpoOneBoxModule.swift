@@ -77,6 +77,10 @@ public class ExpoOneBoxModule: Module {
     private var vpnManager: NETunnelProviderManager?
     private var trafficMonitor: TrafficMonitor?
     private var currentStatus: Int = 0 // 0=Stopped, 1=Starting, 2=Started, 3=Stopping
+    /// Tracks whether VPN is in the process of starting up.
+    /// Set to true when user initiates start, cleared on connected or disconnected.
+    /// Used to detect startup failures even when NEVPNStatus goes connecting→disconnecting→disconnected.
+    private var isStartingUp: Bool = false
     private var isInitialized = false
     private var statusObserver: NSObjectProtocol?
     internal var coreLogEnabled = false
@@ -347,6 +351,7 @@ public class ExpoOneBoxModule: Module {
         try await manager.saveToPreferences()
         try await manager.loadFromPreferences()
 
+        isStartingUp = true
         updateStatus(1) // Starting
 
         // Prepare options (same dict the extension receives in startTunnel)
@@ -355,6 +360,7 @@ public class ExpoOneBoxModule: Module {
         do {
             try manager.connection.startVPNTunnel(options: options)
         } catch {
+            isStartingUp = false
             updateStatus(0)
             sendError(type: "StartVPN", message: error.localizedDescription, source: "module")
             throw error
@@ -405,19 +411,48 @@ public class ExpoOneBoxModule: Module {
     }
 
     private func handleVPNStatusChange(_ status: NEVPNStatus) {
+        NSLog("[ExpoOneBox] NEVPNStatus changed: \(status.rawValue), currentStatus=\(currentStatus), isStartingUp=\(isStartingUp)")
         switch status {
         case .invalid:
+            NSLog("[ExpoOneBox] VPN status: invalid")
+            isStartingUp = false
             stopLogPolling()
             updateStatus(0)
         case .disconnected:
+            // 关键：使用 isStartingUp 标记而非 currentStatus==1 来判断启动失败。
+            // 因为 NEVPNStatus 可能经过 connecting→disconnecting→disconnected，
+            // 到达 disconnected 时 currentStatus 已经是 3(disconnecting) 而非 1(starting)。
+            let wasStarting = self.isStartingUp
+            NSLog("[ExpoOneBox] VPN status: disconnected, wasStarting=\(wasStarting), currentStatus=\(currentStatus)")
+            isStartingUp = false
             trafficMonitor?.disconnect()
             trafficMonitor = nil
             stopLogPolling()
             updateStatus(0)
-            // JS 层在收到 STOPPED 状态后主动调用 getStartError() 查询原因，无需在此推送
+            // 主动检测启动失败：从共享文件读取错误并推送给 JS。
+            if wasStarting {
+                NSLog("[ExpoOneBox] Startup failure path entered, scheduling error check...")
+                // 延迟 500ms 确保 Extension 进程的文件写入已刷盘
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                    guard let self else {
+                        NSLog("[ExpoOneBox] self was deallocated before error check")
+                        return
+                    }
+                    let errMsg = self.readStartupError()
+                    NSLog("[ExpoOneBox] Read startup error file, content: '\(errMsg)'")
+                    if !errMsg.isEmpty {
+                        NSLog("[ExpoOneBox] Sending StartServiceFailed error event to JS")
+                        self.sendError(type: "StartServiceFailed", message: errMsg, source: "binary")
+                    } else {
+                        NSLog("[ExpoOneBox] No error in file, sending generic failure")
+                        self.sendError(type: "StartServiceFailed", message: "启动异常退出，请检查配置文件。", source: "binary")
+                    }
+                }
+            }
         case .connecting:
             updateStatus(1)
         case .connected:
+            isStartingUp = false
             updateStatus(2)
             startTrafficMonitor()
             startLogPolling()

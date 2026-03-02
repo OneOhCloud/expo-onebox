@@ -55,6 +55,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
         const val VPN_REQUEST_CODE = 1001
 
         var currentStatus: Status = Status.Stopped
+        var isStartingUp: Boolean = false
         var coreLogEnabled: Boolean = false
 
 
@@ -313,17 +314,51 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
     override fun onServiceStatusChanged(status: Status) {
 
         try {
+            // 使用独立的 isStartingUp 标记而非检查 currentStatus，
+            // 因为状态可能经过 Starting → Stopping → Stopped，
+            // 到达 Stopped 时 currentStatus 已经是 Stopping。
+            val wasStarting = isStartingUp
+
             val statusName = when (status) {
                 Status.Stopped -> "stopped"
                 Status.Starting -> "connecting"
                 Status.Started -> "connected"
                 Status.Stopping -> "disconnecting"
             }
+
+            when (status) {
+                Status.Starting -> isStartingUp = true
+                Status.Started -> isStartingUp = false
+                Status.Stopped -> isStartingUp = false
+                else -> {}
+            }
+
+            currentStatus = status
+
+            Log.d(TAG, "Status changed: $statusName, wasStarting=$wasStarting, isStartingUp=$isStartingUp")
+
             sendEvent("onStatusChange", mapOf(
                 "status" to status.ordinal,
                 "statusName" to statusName,
                 "message" to "Service status: $statusName"
             ))
+
+            // 主动检测启动失败
+            if (status == Status.Stopped && wasStarting) {
+                val errMsg = try {
+                    val file = java.io.File(getWorkingDir(), "startup_error.txt")
+                    if (file.exists()) file.readText().trim() else ""
+                } catch (_: Exception) { "" }
+
+                val message = errMsg.ifEmpty { "启动异常退出，请检查配置文件。" }
+                Log.e(TAG, "Startup failure detected: $message")
+                sendEvent("onError", mapOf(
+                    "type" to "StartServiceFailed",
+                    "message" to message,
+                    "source" to "binary",
+                    "status" to status.ordinal
+                ))
+            }
 
         } catch (e: Exception) {
             Log.w(TAG, "发送状态变更事件失败: ${e.message}")

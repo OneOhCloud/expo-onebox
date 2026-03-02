@@ -106,10 +106,19 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
 
         startOptionsURL = URL(fileURLWithPath: basePath).appendingPathComponent(ExtensionStartOptions.snapshotFileName)
 
-        let effectiveOptions = try resolveStartOptions(startOptions)
+        let effectiveOptions: [String: NSObject]
+        do {
+            effectiveOptions = try resolveStartOptions(startOptions)
+        } catch {
+            let msg = "(packet-tunnel) error: resolve start options: \(error.localizedDescription)"
+            PacketTunnelProvider.writeStartupError(msg)
+            throw ExtensionStartupError(msg)
+        }
         if effectiveOptions["configContent"] == nil {
+            let msg = "(packet-tunnel) error: missing configContent in tunnel options"
             logger.error("missing configContent")
-            throw ExtensionStartupError("(packet-tunnel) error: missing configContent in tunnel options")
+            PacketTunnelProvider.writeStartupError(msg)
+            throw ExtensionStartupError(msg)
         }
         let configLen = (effectiveOptions["configContent"] as? String)?.count ?? 0
         logger.log("Config content length: \(configLen)")
@@ -118,8 +127,10 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
             try persistStartOptions(effectiveOptions)
             logger.log("Start options persisted")
         } catch {
+            let msg = "(packet-tunnel) error: persist start options: \(error.localizedDescription)"
             logger.error("persist start options: \(error.localizedDescription)")
-            throw ExtensionStartupError("(packet-tunnel) error: persist start options: \(error.localizedDescription)")
+            PacketTunnelProvider.writeStartupError(msg)
+            throw ExtensionStartupError(msg)
         }
 
         applyStartOptions(effectiveOptions)
@@ -133,8 +144,10 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         var setupError: NSError?
         LibboxSetup(options, &setupError)
         if let setupError {
+            let msg = "(packet-tunnel) error: setup service: \(setupError.localizedDescription)"
             logger.error("setup service: \(setupError.localizedDescription)")
-            throw ExtensionStartupError("(packet-tunnel) error: setup service: \(setupError.localizedDescription)")
+            PacketTunnelProvider.writeStartupError(msg)
+            throw ExtensionStartupError(msg)
         }
         logger.log("Libbox setup completed")
 
@@ -142,8 +155,10 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         var stderrError: NSError?
         LibboxRedirectStderr(stderrPath, &stderrError)
         if let stderrError {
+            let msg = "(packet-tunnel) redirect stderr error: \(stderrError.localizedDescription)"
             logger.error("redirect stderr: \(stderrError.localizedDescription)")
-            throw ExtensionStartupError("(packet-tunnel) redirect stderr error: \(stderrError.localizedDescription)")
+            PacketTunnelProvider.writeStartupError(msg)
+            throw ExtensionStartupError(msg)
         }
         logger.log("Stderr redirected to: \(stderrPath)")
 
@@ -153,8 +168,10 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         var error: NSError?
         commandServer = LibboxNewCommandServer(platformInterface, platformInterface, &error)
         if let error {
+            let msg = "(packet-tunnel): create command server error: \(error.localizedDescription)"
             logger.error("create command server: \(error.localizedDescription)")
-            throw ExtensionStartupError("(packet-tunnel): create command server error: \(error.localizedDescription)")
+            PacketTunnelProvider.writeStartupError(msg)
+            throw ExtensionStartupError(msg)
         }
         logger.log("Command server created")
 
@@ -162,8 +179,10 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
             try commandServer!.start()
             logger.log("Command server started")
         } catch {
+            let msg = "(packet-tunnel): start command server error: \(error.localizedDescription)"
             logger.error("start command server: \(error.localizedDescription)")
-            throw ExtensionStartupError("(packet-tunnel): start command server error: \(error.localizedDescription)")
+            PacketTunnelProvider.writeStartupError(msg)
+            throw ExtensionStartupError(msg)
         }
 
         writeMessage("(packet-tunnel): Here I stand")
