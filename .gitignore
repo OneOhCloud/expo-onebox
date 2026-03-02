@@ -46,3 +46,4 @@ src/database/config.ts
 src/modules/**
 ios/Libbox.xcframework
 android/libs/**
+android/build/
