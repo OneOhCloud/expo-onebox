@@ -60,7 +60,7 @@ class TrafficMonitor: NSObject {
     }
 
     fileprivate func onLogMessage(level: Int32, message: String) {
-        module?.sendLog(message: "[\(logLevelName(level))] \(message)")
+        module?.sendLog(message: message)
     }
 
     private func logLevelName(_ level: Int32) -> String {
