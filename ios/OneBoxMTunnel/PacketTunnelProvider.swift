@@ -162,7 +162,8 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         }
         logger.log("Stderr redirected to: \(stderrPath)")
 
-        let ignoreMemoryLimit = (effectiveOptions["ignoreMemoryLimit"] as? NSNumber)?.boolValue ?? false
+        // let ignoreMemoryLimit = (effectiveOptions["ignoreMemoryLimit"] as? NSNumber)?.boolValue ?? false
+        let ignoreMemoryLimit = false
         LibboxSetMemoryLimit(!ignoreMemoryLimit)
 
         var error: NSError?
