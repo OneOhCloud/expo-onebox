@@ -21,6 +21,9 @@ import expo.modules.onebox.oneoh.cloud.helper.Action
 import expo.modules.onebox.oneoh.cloud.helper.Alert
 import expo.modules.onebox.oneoh.cloud.helper.Bugs
 import expo.modules.onebox.oneoh.cloud.helper.Status
+import expo.modules.onebox.oneoh.cloud.helper.findBestDnsServer
+import expo.modules.onebox.oneoh.cloud.helper.getWorkingDir
+import expo.modules.onebox.oneoh.cloud.helper.processConfig
 import io.nekohasekai.libbox.CommandClientHandler
 import io.nekohasekai.libbox.CommandClientOptions
 import io.nekohasekai.libbox.ConnectionEvents
@@ -151,7 +154,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
         // JS layer calls this when status transitions STARTING → STOPPED.
         Function("getStartError") {
             return@Function try {
-                val file = java.io.File(getWorkingDir(), "startup_error.txt")
+                val file = java.io.File(getWorkingDir(context), "startup_error.txt")
                 if (file.exists()) file.readText().trim() else ""
             } catch (e: Exception) {
                 ""
@@ -174,7 +177,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
         }
 
         AsyncFunction("start") { config: String ->
-            val processedConfig = processConfig(config)
+            val processedConfig = processConfig(config, context)
 
             // 打印实际传给 VPN 的配置中 inbounds 地址信息，用于排查
             try {
@@ -188,7 +191,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
             } catch (_: Exception) {}
 
             // 检查规则集缓存文件是否存在
-            val workingDir = getWorkingDir().absolutePath
+            val workingDir = getWorkingDir(context).absolutePath
             val cachePath = "$workingDir/cache/tun-cache-rule-v1.db"
 
             isStartingUp = true
@@ -300,7 +303,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
         }
 
         AsyncFunction("getBestDns") {
-            return@AsyncFunction getBestDnsServer()
+            return@AsyncFunction findBestDnsServer()
         }
 
         View(ExpoOneBoxView::class) {
@@ -349,7 +352,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
             // 主动检测启动失败
             if (status == Status.Stopped && wasStarting) {
                 val errMsg = try {
-                    val file = java.io.File(getWorkingDir(), "startup_error.txt")
+                    val file = java.io.File(getWorkingDir(context), "startup_error.txt")
                     if (file.exists()) file.readText().trim() else ""
                 } catch (_: Exception) { "" }
 
@@ -420,44 +423,6 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
         }
     }
 
-    // ==================== 配置处理 ====================
-
-    private fun getWorkingDir(): File {
-        return context.getExternalFilesDir(null) ?: context.filesDir
-    }
-
-    /**
-     * 处理配置：将缓存文件路径替换为 Android 应用目录。
-     * 保持 processConfig 处理后的 JSON 格式字符串传入 core.BoxService。
-     */
-    private fun processConfig(config: String): String {
-        try {
-            val json = JSONObject(config)
-            val workingDir = getWorkingDir().absolutePath
-
-            // 处理 experimental.cache_file.path
-            if (json.has("experimental")) {
-                val experimental = json.getJSONObject("experimental")
-                if (experimental.has("cache_file")) {
-                    val cacheFile = experimental.getJSONObject("cache_file")
-                    if (cacheFile.has("path")) {
-                        val cachePath = "$workingDir/cache/tun-cache-rule-v1.db"
-                        cacheFile.put("path", cachePath)
-
-                        val cacheDirectory = File("$workingDir/cache")
-                        if (!cacheDirectory.exists()) {
-                            cacheDirectory.mkdirs()
-                        }
-                    }
-                }
-            }
-            return json.toString()
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to process config", e)
-            return config
-        }
-    }
-
     /**
      * 启动 VPNService 前台服务。
      */
@@ -470,157 +435,4 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
         Log.d(TAG, "VPN 服务启动命令已发送")
     }
 
-    /**
-     * 从配置中移除 TUN 类型的 inbound，用于预处理阶段。
-     * 保留 mixed 等其他 inbound。
-     */
-    private fun removeTunInbound(config: String): String {
-        try {
-            val json = JSONObject(config)
-
-            return json.toString()
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to remove TUN inbound", e)
-            return config
-        }
-    }
-
-    // ==================== DNS Testing ====================
-
-    companion object {
-        private val dnsServers = arrayOf(
-            "1.0.0.1",        // Cloudflare DNS
-            "1.1.1.1",        // Cloudflare DNS
-            "1.2.4.8",        // CN DNS
-            "101.101.101.101",
-            "101.102.103.104",
-            "114.114.114.114", // CN 114DNS
-            "114.114.115.115", // CN 114DNS
-            "119.29.29.29",    // CN Tencent DNS
-            "149.112.112.112",
-            "149.112.112.9",
-            "180.184.1.1",
-            "180.184.2.2",
-            "180.76.76.76",
-            "2.188.21.131",   // Iran Yokhdi! DNS
-            "2.188.21.132",   // Iran Yokhdi! DNS
-            "2.189.44.44",    // Iran DNS
-            "202.175.3.3",
-            "202.175.3.8",
-            "208.67.220.220", // OpenDNS
-            "208.67.220.222", // OpenDNS
-            "208.67.222.220", // OpenDNS
-            "208.67.222.222", // OpenDNS
-            "210.2.4.8",
-            "223.5.5.5",     // CN Alibaba DNS
-            "223.6.6.6",     // CN Alibaba DNS
-            "77.88.8.1",
-            "77.88.8.8",
-            "8.8.4.4",       // Google DNS
-            "8.8.8.8",       // Google DNS
-            "9.9.9.9"        // Quad9 DNS
-        )
-    }
-
-    private suspend fun getBestDnsServer(): String {
-        val firstDns = dnsServers.firstOrNull() ?: "8.8.8.8"
-        
-        return try {
-            kotlinx.coroutines.withTimeoutOrNull(10000) {
-                kotlinx.coroutines.async { 
-                    getBestDnsServerInternal() 
-                }.await()
-            } ?: firstDns
-        } catch (e: Exception) {
-            Log.w(TAG, "DNS test failed", e)
-            firstDns
-        }
-    }
-
-    private suspend fun getBestDnsServerInternal(): String {
-        val firstDns = dnsServers.first()
-        
-        return kotlinx.coroutines.coroutineScope {
-            val deferredResults = dnsServers.map { dns ->
-                kotlinx.coroutines.async {
-                    testDnsServer(dns)
-                }
-            }
-            
-            // Wait for the first successful result
-            for (deferred in kotlinx.coroutines.awaitAll(*deferredResults.toTypedArray())) {
-                deferred?.let { (dnsServer, latency) ->
-                    Log.i(TAG, "✓ DNS $dnsServer selected as optimal server with latency ${latency}ms")
-                    return@coroutineScope dnsServer
-                }
-            }
-            
-            Log.i(TAG, "✗ All DNS servers failed, falling back to: $firstDns")
-            firstDns
-        }
-    }
-
-    private suspend fun testDnsServer(dnsServer: String): Pair<String, Long>? {
-        val startTime = System.currentTimeMillis()
-        
-        return try {
-            kotlinx.coroutines.withTimeoutOrNull(500) {
-                performDnsQuery(dnsServer)
-                val latency = System.currentTimeMillis() - startTime
-                val paddedDns = String.format("%-20s", dnsServer)
-                Log.i(TAG, "✓ DNS $paddedDns responded successfully, latency: ${latency}ms")
-                Pair(dnsServer, latency)
-            }
-        } catch (e: Exception) {
-            val paddedDns = String.format("%-20s", dnsServer)
-            Log.i(TAG, "✗ DNS $paddedDns failed or timed out")
-            null
-        }
-    }
-
-    private suspend fun performDnsQuery(dnsServer: String): Unit {
-        return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            Log.d(TAG, "Testing DNS server: $dnsServer")
-            
-            val socket = java.net.DatagramSocket()
-            socket.use { udpSocket ->
-                udpSocket.soTimeout = 500 // 500ms timeout
-                
-                // Create DNS query packet for www.baidu.com
-                val queryData = byteArrayOf(
-                    0x12, 0x34,  // Transaction ID
-                    0x01, 0x00,  // Standard query
-                    0x00, 0x01,  // Questions: 1
-                    0x00, 0x00,  // Answer RRs: 0
-                    0x00, 0x00,  // Authority RRs: 0
-                    0x00, 0x00,  // Additional RRs: 0
-                    // Query for www.baidu.com
-                    3, 'w'.code.toByte(), 'w'.code.toByte(), 'w'.code.toByte(),
-                    5, 'b'.code.toByte(), 'a'.code.toByte(), 'i'.code.toByte(), 'd'.code.toByte(), 'u'.code.toByte(),
-                    3, 'c'.code.toByte(), 'o'.code.toByte(), 'm'.code.toByte(),
-                    0,  // null terminator
-                    0x00, 0x01,  // Type A
-                    0x00, 0x01   // Class IN
-                )
-                
-                // Send query to DNS server
-                val serverAddress = java.net.InetSocketAddress(dnsServer, 53)
-                val sendPacket = java.net.DatagramPacket(queryData, queryData.size, serverAddress)
-                udpSocket.send(sendPacket)
-                
-                // Receive response
-                val buffer = ByteArray(512)
-                val receivePacket = java.net.DatagramPacket(buffer, buffer.size)
-                udpSocket.receive(receivePacket)
-                
-                // Validate response
-                if (receivePacket.length >= 12 && buffer[0] == 0x12.toByte() && buffer[1] == 0x34.toByte()) {
-                    // Valid response received
-                    return@withContext
-                } else {
-                    throw Exception("Invalid DNS response")
-                }
-            }
-        }
-    }
 }
