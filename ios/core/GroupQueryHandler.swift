@@ -21,8 +21,15 @@ class OneShotGroupQueryHandler: NSObject, LibboxCommandClientHandlerProtocol, @u
         settled = true
         lock.unlock()
         guard !wasSettled else { return }
-        DispatchQueue.global().async { [weak self] in
-            _ = try? self?.client?.disconnect()
+        // Capture a strong reference NOW, while we are still guaranteed to be executing
+        // inside libbox's client.connect() call (i.e. the connect-closure's strong `client`
+        // is still alive on the stack).  If we only use [weak self]/self?.client in the
+        // async block, connect() can return and ARC can deallocate the client before the
+        // block runs, making the weak reference nil and leaving the Go-side CommandServer
+        // goroutines permanently leaked (one goroutine-set per poll cycle → slow growth).
+        let clientToDisconnect = client   // strong capture, breaks free from the weak var
+        DispatchQueue.global().async {
+            _ = try? clientToDisconnect?.disconnect()
         }
         switch result {
         case .success(let val): continuation.resume(returning: val)
