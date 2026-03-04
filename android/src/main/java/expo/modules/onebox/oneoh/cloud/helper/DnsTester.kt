@@ -2,9 +2,11 @@ package expo.modules.onebox.oneoh.cloud.helper
 
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.asFlow
+import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.flow.flatMapMerge
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -44,38 +46,39 @@ internal val DNS_SERVERS = arrayOf(
 )
 
 /**
- * 并发测试所有 DNS 服务器，返回响应最快的 IP 地址。
- * 总超时 10 秒，单服务器超时 500ms。
+ * 并发测试所有 DNS 服务器，返回第一个响应的 IP 地址（其余立即取消）。
+ * 全部超时则返回默认 8.8.8.8。总超时 10 秒，单服务器超时 500ms。
  */
 internal suspend fun findBestDnsServer(): String {
-    val firstDns = DNS_SERVERS.firstOrNull() ?: "8.8.8.8"
+    val fallback = DNS_SERVERS.firstOrNull() ?: "8.8.8.8"
     return try {
         withTimeoutOrNull(10000) {
-            async { findBestDnsServerInternal() }.await()
-        } ?: firstDns
+            findBestDnsServerInternal()
+        } ?: fallback.also { Log.w(TAG, "DNS test global timeout, falling back to: $fallback") }
     } catch (e: Exception) {
         Log.w(TAG, "DNS test failed", e)
-        firstDns
+        fallback
     }
 }
 
+/**
+ * 并发启动所有 DNS 测试 Flow，通过 flatMapMerge 并发执行，
+ * firstOrNull() 在收到第一个成功结果后立即取消所有剩余 Flow。
+ */
+@Suppress("OPT_IN_USAGE")
 private suspend fun findBestDnsServerInternal(): String {
-    val firstDns = DNS_SERVERS.first()
-    return coroutineScope {
-        val deferredResults = DNS_SERVERS.map { dns ->
-            async { testDnsServer(dns) }
+    val fallback = DNS_SERVERS.first()
+    return DNS_SERVERS.asFlow()
+        .flatMapMerge(concurrency = DNS_SERVERS.size) { dns ->
+            flow {
+                testDnsServer(dns)?.let { (server, latency) ->
+                    Log.i(TAG, "✓ DNS $server selected as optimal server with latency ${latency}ms")
+                    emit(server)
+                }
+            }.flowOn(Dispatchers.IO)
         }
-
-        for (result in awaitAll(*deferredResults.toTypedArray())) {
-            result?.let { (dnsServer, latency) ->
-                Log.i(TAG, "✓ DNS $dnsServer selected as optimal server with latency ${latency}ms")
-                return@coroutineScope dnsServer
-            }
-        }
-
-        Log.i(TAG, "✗ All DNS servers failed, falling back to: $firstDns")
-        firstDns
-    }
+        .firstOrNull()
+        ?: fallback.also { Log.i(TAG, "✗ All DNS servers failed, falling back to: $fallback") }
 }
 
 private suspend fun testDnsServer(dnsServer: String): Pair<String, Long>? {

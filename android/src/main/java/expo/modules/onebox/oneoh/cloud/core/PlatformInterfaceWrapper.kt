@@ -130,7 +130,7 @@ interface PlatformInterfaceWrapper : PlatformInterface {
         return InterfaceArray(interfaces.iterator())
     }
 
-    override fun underNetworkExtension(): Boolean = false
+    override fun underNetworkExtension(): Boolean = true
 
     override fun includeAllNetworks(): Boolean = false
 

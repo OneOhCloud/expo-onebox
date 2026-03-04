@@ -28,6 +28,7 @@ import io.nekohasekai.libbox.CommandClientHandler
 import io.nekohasekai.libbox.CommandClientOptions
 import io.nekohasekai.libbox.ConnectionEvents
 import io.nekohasekai.libbox.Libbox
+import kotlinx.coroutines.runBlocking
 import io.nekohasekai.libbox.LogIterator
 import io.nekohasekai.libbox.OutboundGroupIterator
 import io.nekohasekai.libbox.SetupOptions
@@ -303,7 +304,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
         }
 
         AsyncFunction("getBestDns") {
-            return@AsyncFunction findBestDnsServer()
+            return@AsyncFunction runBlocking { findBestDnsServer() }
         }
 
         View(ExpoOneBoxView::class) {
