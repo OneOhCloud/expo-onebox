@@ -74,7 +74,7 @@ private class OneShotGroupQueryHandler: NSObject, LibboxCommandClientHandlerProt
     func write(_ events: LibboxConnectionEvents?) {}
 }
 
-public class ExpoOneBoxModule: Module {
+public class ExpoOneBoxModule: Module, @unchecked Sendable {
 
     // Extension bundle identifier — must match the NE target's PRODUCT_BUNDLE_IDENTIFIER
     private static let extensionBundleID = "cloud.oneoh.networktools.tunnel"
