@@ -1,12 +1,12 @@
 import ExpoModulesCore
-import Libbox
+@preconcurrency import Libbox
 @preconcurrency import NetworkExtension
 
 // MARK: - One-shot proxy group query handler
 
 /// Connects to the libbox CommandServer, waits for the first CommandGroup update,
 /// extracts ExitGateway group info, then disconnects.
-private class OneShotGroupQueryHandler: NSObject, LibboxCommandClientHandlerProtocol {
+private class OneShotGroupQueryHandler: NSObject, LibboxCommandClientHandlerProtocol, @unchecked Sendable {
     weak var client: LibboxCommandClient?
     private let continuation: CheckedContinuation<[String: Any], Error>
     private let lock = NSLock()
@@ -62,7 +62,6 @@ private class OneShotGroupQueryHandler: NSObject, LibboxCommandClientHandlerProt
     func writeLogs(_ messageList: (any LibboxLogIteratorProtocol)?) {
         // print logs if coreLogEnabled, otherwise ignore
         guard let messageList else { return }
-        var logs: [String] = []
         while let msg = messageList.next() {
             NSLog("[sing-box] %@", msg.message)
         }            
@@ -243,8 +242,8 @@ public class ExpoOneBoxModule: Module {
             let managers = try await NETunnelProviderManager.loadAllFromPreferences()
             guard let manager = managers.first else { return }
             self.vpnManager = manager
-            DispatchQueue.main.async {
-                self.handleVPNStatusChange(manager.connection.status)
+            DispatchQueue.main.async { [weak self] in
+                self?.handleVPNStatusChange(manager.connection.status)
             }
         } catch {
             NSLog("[ExpoOneBox] syncInitialVPNStatus error: \(error.localizedDescription)")
