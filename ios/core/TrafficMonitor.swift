@@ -8,7 +8,6 @@ class TrafficMonitor: NSObject {
 
     private weak var module: ExpoOneBoxModule?
     private var commandClient: LibboxCommandClient?
-    private var isConnecting = false
 
     init(module: ExpoOneBoxModule) {
         self.module = module
@@ -16,8 +15,7 @@ class TrafficMonitor: NSObject {
     }
 
     func connect() {
-        guard commandClient == nil, !isConnecting else { return }
-        isConnecting = true
+        guard commandClient == nil else { return }
 
         let options = LibboxCommandClientOptions()
         options.addCommand(LibboxCommandStatus)
@@ -26,31 +24,36 @@ class TrafficMonitor: NSObject {
 
         let handler = ClientHandler(monitor: self)
 
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            guard let self else { return }
-            guard let client = LibboxNewCommandClient(handler, options) else {
-                self.isConnecting = false
-                NSLog("[ExpoOneBox] Failed to create CommandClient")
-                return
-            }
+        guard let client = LibboxNewCommandClient(handler, options) else {
+            NSLog("[ExpoOneBox] Failed to create CommandClient")
+            return
+        }
 
+        // Store the client BEFORE launching the background thread and before calling
+        // the blocking connect().  This is critical: client.connect() runs the entire
+        // IPC event loop and only returns after the connection is closed.  If we set
+        // commandClient *after* connect() returns (old code), disconnect() would always
+        // find commandClient==nil and be a no-op, leaving the Go-side CommandServer
+        // goroutines alive until the Extension process exits.  Storing it here lets
+        // disconnect() correctly interrupt an in-progress connect() from any thread.
+        commandClient = client
+
+        DispatchQueue.global(qos: .utility).async { [weak self] in
             do {
+                // Blocks until the connection is closed (by disconnect() or server side).
                 try client.connect()
-                self.commandClient = client
-                self.isConnecting = false
             } catch {
-                self.isConnecting = false
                 NSLog("[ExpoOneBox] CommandClient connect error: \(error.localizedDescription)")
             }
+            // Clear the stored reference once the connection is fully done.
+            self?.commandClient = nil
         }
     }
 
     func disconnect() {
-        if let client = commandClient {
-            try? client.disconnect()
-            commandClient = nil
-        }
-        isConnecting = false
+        guard let client = commandClient else { return }
+        commandClient = nil
+        try? client.disconnect()
     }
 
     // MARK: - Handler Callbacks (called by ClientHandler)
