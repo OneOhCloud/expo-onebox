@@ -687,12 +687,12 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
             
             if result {
                 let latency = CFAbsoluteTimeGetCurrent() - startTime
-                let paddedDns = String(format: "%-20s", dnsServer)
+                let paddedDns = dnsServer.padding(toLength: 20, withPad: " ", startingAt: 0)
                 NSLog("[ExpoOneBox] ✓ DNS %@ responded successfully, latency: %.3fms", paddedDns, latency * 1000)
                 return (dnsServer, latency)
             }
         } catch {
-            let paddedDns = String(format: "%-20s", dnsServer)
+            let paddedDns = dnsServer.padding(toLength: 20, withPad: " ", startingAt: 0)
             NSLog("[ExpoOneBox] ✗ DNS %@ failed or timed out", paddedDns)
         }
         
@@ -750,7 +750,18 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
                     var serverAddr = sockaddr_in()
                     serverAddr.sin_family = sa_family_t(AF_INET)
                     serverAddr.sin_port = UInt16(53).bigEndian
-                    inet_pton(AF_INET, dnsServer, &serverAddr.sin_addr)
+                    
+                    // Validate IP address format
+                    let inetResult = inet_pton(AF_INET, dnsServer, &serverAddr.sin_addr)
+                    guard inetResult == 1 else {
+                        lock.lock()
+                        if !isResumed {
+                            isResumed = true
+                            continuation.resume(throwing: NSError(domain: "InvalidIPAddress", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid IP address: \(dnsServer)"]))
+                        }
+                        lock.unlock()
+                        return
+                    }
                     
                     // Send query
                     let sendResult = queryData.withUnsafeBytes { queryBytes in
