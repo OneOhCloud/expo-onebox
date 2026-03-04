@@ -47,12 +47,12 @@ internal val DNS_SERVERS = arrayOf(
 
 /**
  * 并发测试所有 DNS 服务器，返回第一个响应的 IP 地址（其余立即取消）。
- * 全部超时则返回默认 8.8.8.8。总超时 10 秒，单服务器超时 500ms。
+ * 全部超时则返回默认第一个。总超时 10 秒，单服务器超时 500ms（由 soTimeout 控制）。
  */
 internal suspend fun findBestDnsServer(): String {
     val fallback = DNS_SERVERS.firstOrNull() ?: "8.8.8.8"
     return try {
-        withTimeoutOrNull(10000) {
+        withTimeoutOrNull(10_000) {
             findBestDnsServerInternal()
         } ?: fallback.also { Log.w(TAG, "DNS test global timeout, falling back to: $fallback") }
     } catch (e: Exception) {
@@ -61,45 +61,66 @@ internal suspend fun findBestDnsServer(): String {
     }
 }
 
-/**
- * 并发启动所有 DNS 测试 Flow，通过 flatMapMerge 并发执行，
- * firstOrNull() 在收到第一个成功结果后立即取消所有剩余 Flow。
- */
 @Suppress("OPT_IN_USAGE")
 private suspend fun findBestDnsServerInternal(): String {
     val fallback = DNS_SERVERS.first()
-    return DNS_SERVERS.asFlow()
+    val results = mutableListOf<Pair<String, Long>>()
+    val resultsLock = Any()
+    val globalStart = System.currentTimeMillis()
+
+    Log.i(TAG, "====== DNS Test Started (${DNS_SERVERS.size} servers) ======")
+
+    val winner = DNS_SERVERS.asFlow()
         .flatMapMerge(concurrency = DNS_SERVERS.size) { dns ->
             flow {
-                testDnsServer(dns)?.let { (server, latency) ->
-                    Log.i(TAG, "✓ DNS $server selected as optimal server with latency ${latency}ms")
-                    emit(server)
+                testDnsServer(dns, globalStart)?.let { result ->
+                    synchronized(resultsLock) { results.add(result) }
+                    emit(result)
                 }
             }.flowOn(Dispatchers.IO)
         }
         .firstOrNull()
-        ?: fallback.also { Log.i(TAG, "✗ All DNS servers failed, falling back to: $fallback") }
+
+    // 打印已收集到的响应排名（firstOrNull 取消后部分任务可能还未完成，属正常现象）
+    synchronized(resultsLock) {
+        val sorted = results.sortedBy { it.second }
+        Log.i(TAG, "====== DNS Results (${results.size}/${DNS_SERVERS.size} responded before cancel) ======")
+        sorted.forEachIndexed { index, (dns, latency) ->
+            val marker = if (dns == winner?.first) "👑" else "  "
+            Log.i(TAG, "$marker #${index + 1}  ${dns.padEnd(20)}  ${latency}ms")
+        }
+        Log.i(TAG, "=================================================================")
+    }
+
+    return winner?.also { (dns, latency) ->
+        val totalElapsed = System.currentTimeMillis() - globalStart
+        Log.i(TAG, "✅ Selected: $dns  rtt=${latency}ms  total_elapsed=${totalElapsed}ms")
+    }?.first ?: fallback.also {
+        Log.w(TAG, "✗ All DNS servers failed, falling back to: $fallback")
+    }
 }
 
-private suspend fun testDnsServer(dnsServer: String): Pair<String, Long>? {
+/**
+ * 测试单个 DNS 服务器。
+ * @param globalStart 全局开始时间，用于计算 elapsed（方便对比各服务器竞争情况）
+ */
+private suspend fun testDnsServer(dnsServer: String, globalStart: Long): Pair<String, Long>? {
     val startTime = System.currentTimeMillis()
     return try {
-        withTimeoutOrNull(500) {
-            performDnsQuery(dnsServer)
-            val latency = System.currentTimeMillis() - startTime
-            Log.i(TAG, "✓ DNS ${dnsServer.padEnd(20)} responded successfully, latency: ${latency}ms")
-            Pair(dnsServer, latency)
-        }
+        performDnsQuery(dnsServer)
+        val latency = System.currentTimeMillis() - startTime
+        val elapsed = System.currentTimeMillis() - globalStart
+        Log.d(TAG, "✓ ${dnsServer.padEnd(20)}  rtt=${latency}ms  elapsed=${elapsed}ms")
+        Pair(dnsServer, latency)
     } catch (e: Exception) {
-        Log.i(TAG, "✗ DNS ${dnsServer.padEnd(20)} failed or timed out")
+        val elapsed = System.currentTimeMillis() - globalStart
+        Log.d(TAG, "✗ ${dnsServer.padEnd(20)}  elapsed=${elapsed}ms  reason=${e.message}")
         null
     }
 }
 
 private suspend fun performDnsQuery(dnsServer: String) {
     withContext(Dispatchers.IO) {
-        Log.d(TAG, "Testing DNS server: $dnsServer")
-
         // DNS query packet for www.baidu.com (type A)
         val queryData = byteArrayOf(
             0x12, 0x34,  // Transaction ID
@@ -116,9 +137,8 @@ private suspend fun performDnsQuery(dnsServer: String) {
             0x00, 0x01   // Class IN
         )
 
-        val socket = java.net.DatagramSocket()
-        socket.use { udpSocket ->
-            udpSocket.soTimeout = 500
+        java.net.DatagramSocket().use { udpSocket ->
+            udpSocket.soTimeout = 500  // 唯一的超时控制点，不依赖协程层 timeout
 
             val serverAddress = java.net.InetSocketAddress(dnsServer, 53)
             udpSocket.send(java.net.DatagramPacket(queryData, queryData.size, serverAddress))
@@ -127,9 +147,7 @@ private suspend fun performDnsQuery(dnsServer: String) {
             val receivePacket = java.net.DatagramPacket(buffer, buffer.size)
             udpSocket.receive(receivePacket)
 
-            if (receivePacket.length >= 12 && buffer[0] == 0x12.toByte() && buffer[1] == 0x34.toByte()) {
-                return@withContext
-            } else {
+            if (receivePacket.length < 12 || buffer[0] != 0x12.toByte() || buffer[1] != 0x34.toByte()) {
                 throw Exception("Invalid DNS response")
             }
         }
