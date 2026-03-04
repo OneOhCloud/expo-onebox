@@ -28,13 +28,16 @@ import io.nekohasekai.libbox.CommandClientHandler
 import io.nekohasekai.libbox.CommandClientOptions
 import io.nekohasekai.libbox.ConnectionEvents
 import io.nekohasekai.libbox.Libbox
-import kotlinx.coroutines.runBlocking
+import io.nekohasekai.libbox.LogEntry
 import io.nekohasekai.libbox.LogIterator
 import io.nekohasekai.libbox.OutboundGroupIterator
 import io.nekohasekai.libbox.SetupOptions
 import io.nekohasekai.libbox.StatusMessage
 import io.nekohasekai.libbox.StringIterator
+import io.nekohasekai.sfa.utils.CommandClient
 import kotlinx.coroutines.DelicateCoroutinesApi
+import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
 import java.io.File
 import java.net.URL
@@ -51,6 +54,48 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
     private lateinit var connection: ServiceConnection
     private var vpnPermissionPromise: Promise? = null
 
+    // ==================== 日志/流量实时监控 ====================
+
+    /** 订阅 libbox CommandServer 的日志和状态流量，并推送到 JS 层 */
+    @OptIn(DelicateCoroutinesApi::class)
+    private val statusMonitor by lazy {
+        CommandClient(
+            GlobalScope,
+            listOf(CommandClient.ConnectionType.Log, CommandClient.ConnectionType.Status),
+            object : CommandClient.Handler {
+                override fun appendLogs(message: List<LogEntry>) {
+                    if (!coreLogEnabled) return
+                    for (entry in message) {
+                        try {
+                            sendEvent("onLog", mapOf("message" to entry.message))
+                        } catch (_: Exception) {}
+                    }
+                }
+                override fun updateStatus(status: StatusMessage) {
+                    try {
+                        sendEvent(
+                            "onTrafficUpdate",
+                            mapOf(
+                                "uplink"              to status.uplink,
+                                "downlink"            to status.downlink,
+                                "uplinkTotal"         to status.uplinkTotal,
+                                "downlinkTotal"       to status.downlinkTotal,
+                                "uplinkDisplay"       to (Libbox.formatBytes(status.uplink) + "/s"),
+                                "downlinkDisplay"     to (Libbox.formatBytes(status.downlink) + "/s"),
+                                "uplinkTotalDisplay"  to Libbox.formatBytes(status.uplinkTotal),
+                                "downlinkTotalDisplay" to Libbox.formatBytes(status.downlinkTotal),
+                                "memory"              to status.memory,
+                                "memoryDisplay"       to Libbox.formatBytes(status.memory),
+                                "goroutines"          to status.goroutines,
+                                "connectionsIn"       to status.connectionsIn,
+                                "connectionsOut"      to status.connectionsOut
+                            )
+                        )
+                    } catch (_: Exception) {}
+                }
+            }
+        )
+    }
 
     companion object {
         private const val TAG = "ExpoOneBoxModule"
@@ -110,6 +155,11 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
         }
 
         OnDestroy {
+            try {
+                statusMonitor.disconnect()
+            } catch (e: Exception) {
+                Log.w(TAG, "statusMonitor 销毁失败", e)
+            }
             try {
                 connection.disconnect()
             } catch (e: Exception) {
@@ -335,8 +385,20 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
 
             when (status) {
                 Status.Starting -> isStartingUp = true
-                Status.Started -> isStartingUp = false
-                Status.Stopped -> isStartingUp = false
+                Status.Started -> {
+                    isStartingUp = false
+                    // VPN 已连接，开始监听日志和流量
+                    try { statusMonitor.connect() } catch (e: Exception) {
+                        Log.w(TAG, "statusMonitor connect failed: ${e.message}")
+                    }
+                }
+                Status.Stopped -> {
+                    isStartingUp = false
+                    // VPN 已停止，断开监控
+                    try { statusMonitor.disconnect() } catch (e: Exception) {
+                        Log.w(TAG, "statusMonitor disconnect failed: ${e.message}")
+                    }
+                }
                 else -> {}
             }
 
