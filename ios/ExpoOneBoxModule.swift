@@ -723,7 +723,7 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
         queryData.append(contentsOf: [0x00, 0x01])  // Type A
         queryData.append(contentsOf: [0x00, 0x01])  // Class IN
         
-        return try await withCheckedThrowingContinuation { (continuation: CheckedThrowingContinuation<Void, Error>) in
+        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             var isResumed = false
             let lock = NSLock()
             
@@ -746,11 +746,11 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
                     defer { close(socketFD) }
                     
                     // Configure server address
-                    let serverIP = inet_addr(dnsServer)
+                    // Create server address using safer approach
                     var serverAddr = sockaddr_in()
                     serverAddr.sin_family = sa_family_t(AF_INET)
-                    serverAddr.sin_port = htons(53)
-                    serverAddr.sin_addr.s_addr = serverIP
+                    serverAddr.sin_port = UInt16(53).bigEndian
+                    inet_pton(AF_INET, dnsServer, &serverAddr.sin_addr)
                     
                     // Send query
                     let sendResult = queryData.withUnsafeBytes { queryBytes in
