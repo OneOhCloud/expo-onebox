@@ -16,6 +16,7 @@ declare class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
   getCoreLogEnabled(): boolean
   getProxyNodes(): Promise<{ all: { tag: string; delay: number }[]; now: string }>;
   selectProxyNode(node: string): Promise<boolean>;
+  getBestDns(): Promise<string>;
 }
 
 // This call loads the native module object from the JSI.
