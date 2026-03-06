@@ -17,10 +17,6 @@ declare class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
   getProxyNodes(): Promise<{ all: { tag: string; delay: number }[]; now: string }>;
   selectProxyNode(node: string): Promise<boolean>;
   getBestDns(): Promise<string>;
-  /** Android: check if POST_NOTIFICATIONS permission is granted */
-  checkNotificationPermission(): Promise<boolean>;
-  /** Android: request POST_NOTIFICATIONS runtime permission (Android 13+). Returns true if granted. */
-  requestNotificationPermission(): Promise<boolean>;
   /** iOS: fire a lightweight network request to trigger the system network-access permission prompt. */
   triggerNetworkPermission(): Promise<boolean>;
   /**
