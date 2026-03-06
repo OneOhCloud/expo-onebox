@@ -243,7 +243,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
 
             // 检查规则集缓存文件是否存在
             val workingDir = getWorkingDir(context).absolutePath
-            val cachePath = "$workingDir/cache/tun-cache-rule-v1.db"
+            val cachePath = "$workingDir/cache/tun.db"
 
             isStartingUp = true
             startVPNService(processedConfig)

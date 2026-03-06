@@ -28,7 +28,7 @@ internal fun processConfig(config: String, context: Context): String {
             if (experimental.has("cache_file")) {
                 val cacheFile = experimental.getJSONObject("cache_file")
                 if (cacheFile.has("path")) {
-                    val cachePath = "$workingDir/cache/tun-cache-rule-v1.db"
+                    val cachePath = "$workingDir/cache/tun.db"
                     cacheFile.put("path", cachePath)
 
                     val cacheDirectory = File("$workingDir/cache")
