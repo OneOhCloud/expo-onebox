@@ -1,15 +1,19 @@
 package expo.modules.onebox.oneoh.cloud
 
+import android.Manifest
 import android.app.Activity
 import android.app.Application
 import android.app.NotificationManager
 import android.content.ClipboardManager
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.VpnService
 import android.net.wifi.WifiManager
+import android.os.Build
 import android.os.PowerManager
 import android.util.Log
+import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.content.getSystemService
 import expo.modules.kotlin.Promise
@@ -53,6 +57,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
 
     private lateinit var connection: ServiceConnection
     private var vpnPermissionPromise: Promise? = null
+    private var notificationPermissionPromise: Promise? = null
 
     // ==================== 日志/流量实时监控 ====================
 
@@ -102,6 +107,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
 
         lateinit var application: Application
         const val VPN_REQUEST_CODE = 1001
+        const val NOTIFICATION_PERMISSION_REQUEST_CODE = 1002
 
         var currentStatus: Status = Status.Stopped
         var isStartingUp: Boolean = false
@@ -176,6 +182,15 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
             }
         }
 
+        OnRequestPermissionsResult { _, (requestCode, _, grantResults) ->
+            if (requestCode == NOTIFICATION_PERMISSION_REQUEST_CODE) {
+                val granted = grantResults.isNotEmpty() &&
+                        grantResults[0] == PackageManager.PERMISSION_GRANTED
+                notificationPermissionPromise?.resolve(granted)
+                notificationPermissionPromise = null
+            }
+        }
+
         // 获取当前 VPN 状态
         Function("getStatus") {
             return@Function try {
@@ -225,6 +240,47 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
             } else {
                 promise.resolve(true)
             }
+        }
+
+        // ---- 通知权限（Android 13+ 需要运行时申请 POST_NOTIFICATIONS）----
+        AsyncFunction("checkNotificationPermission") {
+            return@AsyncFunction if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                ContextCompat.checkSelfPermission(
+                    context, Manifest.permission.POST_NOTIFICATIONS
+                ) == PackageManager.PERMISSION_GRANTED
+            } else {
+                true // Android 12 及以下无需运行时权限
+            }
+        }
+
+        AsyncFunction("requestNotificationPermission") { promise: Promise ->
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                val already = ContextCompat.checkSelfPermission(
+                    context, Manifest.permission.POST_NOTIFICATIONS
+                ) == PackageManager.PERMISSION_GRANTED
+                if (already) {
+                    promise.resolve(true)
+                } else {
+                    notificationPermissionPromise = promise
+                    appContext.currentActivity?.let { activity ->
+                        ActivityCompat.requestPermissions(
+                            activity,
+                            arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+                            NOTIFICATION_PERMISSION_REQUEST_CODE
+                        )
+                    } ?: promise.resolve(false)
+                }
+            } else {
+                promise.resolve(true)
+            }
+        }
+
+        // ---- getCacheDbPath: JS 层通过 expo-file-system 写入 cache.db 的目标路径 ----
+        Function("getCacheDbPath") {
+            val workingDir = getWorkingDir(context)
+            val cacheDir = File(workingDir, "cache")
+            if (!cacheDir.exists()) cacheDir.mkdirs()
+            return@Function File(cacheDir, "tun.db").absolutePath
         }
 
         AsyncFunction("start") { config: String ->

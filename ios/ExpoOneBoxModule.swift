@@ -155,6 +155,33 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
             return await DnsTester.findBest()
         }
 
+        // Trigger iOS network access permission prompt.
+        // iOS shows an "Allow network access" alert on the very first outbound
+        // connection. Calling this on first launch lets us request it early
+        // instead of silently blocking VPN traffic.
+        AsyncFunction("triggerNetworkPermission") { () async -> Bool in
+            return await withCheckedContinuation { continuation in
+                let url = URL(string: "https://captive.apple.com/hotspot-detect.html")!
+                let task = URLSession.shared.dataTask(with: url) { _, _, _ in
+                    continuation.resume(returning: true)
+                }
+                task.resume()
+            }
+        }
+
+        // Return the absolute path where JS should copy cache.db via expo-file-system.
+        // Path matches the tempPath supplied to LibboxSetup: <AppGroup>/Library/Caches/tun.db
+        Function("getCacheDbPath") { () -> String in
+            guard let sharedDir = FileManager.default.containerURL(
+                forSecurityApplicationGroupIdentifier: Self.appGroupID
+            ) else { return "" }
+            let cacheDir = sharedDir
+                .appendingPathComponent("Library", isDirectory: true)
+                .appendingPathComponent("Caches", isDirectory: true)
+            try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
+            return cacheDir.appendingPathComponent("tun.db").path
+        }
+
         View(ExpoOneBoxView.self) {
             Prop("url") { (view: ExpoOneBoxView, url: URL) in
                 if view.webView.url != url {
@@ -248,6 +275,44 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
         return manager
     }
 
+    // MARK: - Config Processing
+
+    /// Swift equivalent of Android's processConfig.
+    /// Rewrites `experimental.cache_file.path` to the absolute path of
+    /// `<AppGroup>/Library/Caches/tun.db` so sing-box can find the pre-seeded cache.
+    private func processConfig(_ config: String) -> String {
+        guard
+            let data = config.data(using: .utf8),
+            var json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return config }
+
+        guard var experimental = json["experimental"] as? [String: Any],
+              var cacheFile = experimental["cache_file"] as? [String: Any],
+              cacheFile["path"] != nil
+        else { return config }
+
+        guard let sharedDir = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: Self.appGroupID
+        ) else { return config }
+
+        let cacheDir = sharedDir
+            .appendingPathComponent("Library", isDirectory: true)
+            .appendingPathComponent("Caches", isDirectory: true)
+        try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
+
+        cacheFile["path"] = cacheDir.appendingPathComponent("tun.db").path
+        experimental["cache_file"] = cacheFile
+        json["experimental"] = experimental
+
+        guard let processed = try? JSONSerialization.data(withJSONObject: json),
+              let result = String(data: processed, encoding: .utf8)
+        else { return config }
+
+        NSLog("[ExpoOneBox] processConfig: cache_file.path → %@",
+              cacheDir.appendingPathComponent("tun.db").path)
+        return result
+    }
+
     // MARK: - Prepare Options (following ExtensionProfile pattern)
 
     private func prepareStartOptions(config: String) -> [String: NSObject] {
@@ -291,8 +356,11 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
         isStartingUp = true
         updateStatus(1) // Starting
 
+        // Rewrite experimental.cache_file.path to the correct absolute path
+        let processedConfig = processConfig(config)
+
         // Prepare options (same dict the extension receives in startTunnel)
-        let options = prepareStartOptions(config: config)
+        let options = prepareStartOptions(config: processedConfig)
 
         do {
             try manager.connection.startVPNTunnel(options: options)
