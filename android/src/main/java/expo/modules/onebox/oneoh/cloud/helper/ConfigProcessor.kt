@@ -27,14 +27,13 @@ internal fun processConfig(config: String, context: Context): String {
             val experimental = json.getJSONObject("experimental")
             if (experimental.has("cache_file")) {
                 val cacheFile = experimental.getJSONObject("cache_file")
-                if (cacheFile.has("path")) {
-                    val cachePath = "$workingDir/cache/tun.db"
-                    cacheFile.put("path", cachePath)
+                val cachePath = "$workingDir/cache/tun.db"
+                cacheFile.put("path", cachePath)
+                cacheFile.put("enabled", true)
 
-                    val cacheDirectory = File("$workingDir/cache")
-                    if (!cacheDirectory.exists()) {
-                        cacheDirectory.mkdirs()
-                    }
+                val cacheDirectory = File("$workingDir/cache")
+                if (!cacheDirectory.exists()) {
+                    cacheDirectory.mkdirs()
                 }
             }
         }

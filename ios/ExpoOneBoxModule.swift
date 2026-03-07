@@ -287,8 +287,7 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
         else { return config }
 
         guard var experimental = json["experimental"] as? [String: Any],
-              var cacheFile = experimental["cache_file"] as? [String: Any],
-              cacheFile["path"] != nil
+              var cacheFile = experimental["cache_file"] as? [String: Any]
         else { return config }
 
         guard let sharedDir = FileManager.default.containerURL(
@@ -301,6 +300,7 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
         try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
 
         cacheFile["path"] = cacheDir.appendingPathComponent("tun.db").path
+        cacheFile["enabled"] = true
         experimental["cache_file"] = cacheFile
         json["experimental"] = experimental
 
