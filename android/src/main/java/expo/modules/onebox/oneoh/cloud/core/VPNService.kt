@@ -79,7 +79,7 @@ class VPNService : VpnService(), PlatformInterfaceWrapper {
             }
 
             val builder = Builder()
-                .setSession("sing-box")
+                .setSession("oneboxm")
                 .setMtu(options.mtu)
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {

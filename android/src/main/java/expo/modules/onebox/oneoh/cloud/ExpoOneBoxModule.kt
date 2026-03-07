@@ -106,8 +106,6 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
         var currentStatus: Status = Status.Stopped
         var isStartingUp: Boolean = false
         var coreLogEnabled: Boolean = false
-
-
         val notification by lazy { application.getSystemService<NotificationManager>()!! }
         val connectivity by lazy { application.getSystemService<ConnectivityManager>()!! }
         val packageManager by lazy { application.packageManager }
@@ -135,6 +133,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
                 it.debug = BuildConfig.DEBUG
             },
         )
+        Libbox.setMemoryLimit(true)
         Libbox.redirectStderr(File(workingDir, "stderr.log").path)
     }
 

@@ -163,6 +163,7 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         logger.log("Stderr redirected to: \(stderrPath)")
 
         // let ignoreMemoryLimit = (effectiveOptions["ignoreMemoryLimit"] as? NSNumber)?.boolValue ?? false
+        // 强制不忽略内存限制，确保在内存紧张时系统能正确回收资源，避免被杀死后无法清理的情况 
         let ignoreMemoryLimit = false
         LibboxSetMemoryLimit(!ignoreMemoryLimit)
 

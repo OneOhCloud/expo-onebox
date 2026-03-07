@@ -57,7 +57,7 @@ class ServiceNotification(
         val packageName = service.packageName
         val launchIntent = service.packageManager.getLaunchIntentForPackage(packageName)
         NotificationCompat.Builder(service, NOTIFICATION_CHANNEL).setShowWhen(false).setOngoing(true)
-            .setContentTitle("sing-box").setOnlyAlertOnce(true)
+            .setContentTitle("oneboxm").setOnlyAlertOnce(true)
             .setSmallIcon(R.drawable.ic_menu)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setContentIntent(
@@ -101,7 +101,7 @@ class ServiceNotification(
         service.startForeground(
             NOTIFICATION_ID,
             notificationBuilder
-                .setContentTitle(lastProfileName.takeIf { it.isNotBlank() } ?: "sing-box")
+                .setContentTitle(lastProfileName.takeIf { it.isNotBlank() } ?: "oneboxm")
                 .setContentText(service.getString(contentTextId)).build(),
         )
     }
