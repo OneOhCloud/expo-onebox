@@ -20,11 +20,13 @@ declare class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
   /** iOS: fire a lightweight network request to trigger the system network-access permission prompt. */
   triggerNetworkPermission(): Promise<boolean>;
   /**
-   * Returns the absolute path where JS should write cache.db.
-   * Android: <externalFilesDir>/cache/tun.db
+   * Copies the asset at sourceUri to the native working directory as tun.db.
+   * Skips if the destination file already exists.
+   * Android: <externalFilesDir>/tun.db
    * iOS:     <AppGroup>/Library/Caches/tun.db
+   * @param sourceUri A file:// URI pointing to the bundled asset (from expo-asset localUri).
    */
-  getCacheDbPath(): string;
+  copy2CacheDbPath(sourceUri: string): Promise<boolean>;
 }
 
 // This call loads the native module object from the JSI.

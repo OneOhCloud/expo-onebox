@@ -27,9 +27,11 @@ internal fun processConfig(config: String, context: Context): String {
             val experimental = json.getJSONObject("experimental")
             if (experimental.has("cache_file")) {
                 val cacheFile = experimental.getJSONObject("cache_file")
-                val cachePath = "$workingDir/cache/tun.db"
+                val cachePath = "$workingDir/tun.db"
                 cacheFile.put("path", cachePath)
                 cacheFile.put("enabled", true)
+                Log.i(TAG, "workingDir: $workingDir")
+                Log.i(TAG, "config[experimental] cachePath: $cachePath")
 
                 val cacheDirectory = File("$workingDir/cache")
                 if (!cacheDirectory.exists()) {
@@ -37,6 +39,7 @@ internal fun processConfig(config: String, context: Context): String {
                 }
             }
         }
+        Log.i(TAG, "config: $json")
         json.toString()
     } catch (e: Exception) {
         Log.w(TAG, "Failed to process config", e)

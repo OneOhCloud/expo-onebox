@@ -169,17 +169,24 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
             }
         }
 
-        // Return the absolute path where JS should copy cache.db via expo-file-system.
-        // Path matches the tempPath supplied to LibboxSetup: <AppGroup>/Library/Caches/tun.db
-        Function("getCacheDbPath") { () -> String in
+        // Copies the bundled asset (sourceUri = file:// URI) into the AppGroup Caches dir as tun.db.
+        // Skips if the destination already exists. Returns true if copied, false if skipped.
+        AsyncFunction("copy2CacheDbPath") { (sourceUri: String) -> Bool in
             guard let sharedDir = FileManager.default.containerURL(
                 forSecurityApplicationGroupIdentifier: Self.appGroupID
-            ) else { return "" }
+            ) else { return false }
             let cacheDir = sharedDir
                 .appendingPathComponent("Library", isDirectory: true)
                 .appendingPathComponent("Caches", isDirectory: true)
             try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
-            return cacheDir.appendingPathComponent("tun.db").path
+            let destURL = cacheDir.appendingPathComponent("tun.db")
+            if FileManager.default.fileExists(atPath: destURL.path) {
+                return false
+            }
+            guard let sourceURL = URL(string: sourceUri) else { return false }
+            let data = try Data(contentsOf: sourceURL)
+            try data.write(to: destURL, options: .atomic)
+            return true
         }
 
         View(ExpoOneBoxView.self) {

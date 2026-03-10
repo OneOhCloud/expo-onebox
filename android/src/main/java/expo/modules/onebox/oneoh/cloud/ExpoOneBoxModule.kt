@@ -126,8 +126,11 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
         Libbox.setup(
             SetupOptions().also {
                 it.basePath = baseDir.path
+                Log.i(TAG, "basePath: ${it.basePath}")
                 it.workingPath = workingDir.path
+                Log.i(TAG, "workingPath: ${it.workingPath}")
                 it.tempPath = tempDir.path
+                Log.i(TAG, "tempPath: ${it.tempPath}")
                 it.fixAndroidStack = Bugs.fixAndroidStack
                 it.logMaxLines = 3000
                 it.debug = BuildConfig.DEBUG
@@ -226,12 +229,25 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
             }
         }
 
-        // ---- getCacheDbPath: JS 层通过 expo-file-system 写入 cache.db 的目标路径 ----
-        Function("getCacheDbPath") {
+        // ---- copy2CacheDbPath: 将 JS 传入的 asset URI 原生复制为 tun.db，已存在则跳过 ----
+        AsyncFunction("copy2CacheDbPath") { sourceUri: String ->
             val workingDir = getWorkingDir(context)
-            val cacheDir = File(workingDir, "cache")
-            if (!cacheDir.exists()) cacheDir.mkdirs()
-            return@Function File(cacheDir, "tun.db").absolutePath
+            val destFile = File(workingDir, "tun.db")
+            if (destFile.exists()) {
+                Log.i(TAG, "[copy2CacheDbPath] tun.db already exists, skipping")
+                return@AsyncFunction false
+            }
+            val uri = android.net.Uri.parse(sourceUri)
+            val inputStream = context.contentResolver.openInputStream(uri)
+                ?: context.contentResolver.openInputStream(android.net.Uri.fromFile(java.io.File(uri.path ?: sourceUri.removePrefix("file://"))))
+                ?: throw Exception("Cannot open sourceUri: $sourceUri")
+            inputStream.use { input ->
+                destFile.outputStream().use { output ->
+                    input.copyTo(output)
+                }
+            }
+            Log.i(TAG, "[copy2CacheDbPath] tun.db copied to ${destFile.absolutePath}")
+            return@AsyncFunction true
         }
 
         AsyncFunction("start") { config: String ->
@@ -250,7 +266,14 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
 
             // 检查规则集缓存文件是否存在
             val workingDir = getWorkingDir(context).absolutePath
-            val cachePath = "$workingDir/cache/tun.db"
+            val cachePath = "$workingDir/tun.db"
+            Log.i(TAG, "cachePath: $cachePath")
+            if (!File(cachePath).exists()){
+                Log.e(TAG, "规则集缓存文件不存在: $cachePath")
+
+            }else{
+                Log.i(TAG, "规则集缓存文件存在: $cachePath")
+            }
 
             isStartingUp = true
             startVPNService(processedConfig)
