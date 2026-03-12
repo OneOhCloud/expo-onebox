@@ -104,7 +104,7 @@ func checkJavaVersion() {
 	if err != nil {
 		log.Fatal(E.Cause(err, "check java version"))
 	}
-	if !strings.Contains(javaVersion, "openjdk 17") || !strings.Contains(javaVersion, "openjdk 21") {
+	if !strings.Contains(javaVersion, "openjdk 17") && !strings.Contains(javaVersion, "openjdk 21") {
 		log.Fatal("java version should be openjdk 17")
 	}
 }
