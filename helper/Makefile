@@ -1,6 +1,4 @@
-# 获取 https://github.com/SagerNet/sing-box 最新版本的tag
-SING_BOX_VERSION := $(shell curl -sL https://api.github.com/repos/SagerNet/sing-box/releases/latest | sed -n 's/.*"tag_name":[[:space:]]*"\([^"\]*\)".*/\1/p')
-SING_BOX_TAG := $(notdir $(SING_BOX_VERSION))
+SING_BOX_TAG = "v1.13.0"
 
 # 获取 https://github.com/SagerNet/cronet-go 最新版本的tag
 CRONET_GO_VERSION := $(shell curl -sL https://api.github.com/repos/SagerNet/cronet-go/releases/latest | sed -n 's/.*"tag_name":[[:space:]]*"\([^"\]*\)".*/\1/p')
