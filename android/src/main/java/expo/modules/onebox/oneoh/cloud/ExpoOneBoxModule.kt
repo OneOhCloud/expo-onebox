@@ -363,6 +363,18 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
             }.start()
         }
 
+        // ---- triggerURLTest: 触发 URLTest (单节点 tag 或 group tag 如 "ExitGateway") ----
+        AsyncFunction("triggerURLTest") { tag: String ->
+            try {
+                val client = Libbox.newStandaloneCommandClient()
+                client?.urlTest(tag)
+                true
+            } catch (e: Exception) {
+                Log.w(TAG, "triggerURLTest failed: ${e.message}")
+                false
+            }
+        }
+
         // ---- selectProxyNode: 通过 libbox StandaloneCommandClient 选择节点 ----
         AsyncFunction("selectProxyNode") { node: String ->
             try {

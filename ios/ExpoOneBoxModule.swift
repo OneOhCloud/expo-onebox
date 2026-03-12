@@ -137,6 +137,20 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
             }
         }
 
+        // Trigger URLTest for a specific outbound tag or group tag (e.g. "ExitGateway").
+        AsyncFunction("triggerURLTest") { (tag: String) async -> Bool in
+            return await Task.detached(priority: .userInitiated) {
+                guard let client = LibboxNewStandaloneCommandClient() else { return false }
+                do {
+                    try client.urlTest(tag)
+                    return true
+                } catch {
+                    NSLog("[ExpoOneBox] triggerURLTest(\(tag)) error: \(error.localizedDescription)")
+                    return false
+                }
+            }.value
+        }
+
         // Select a proxy outbound in the ExitGateway selector group
         // via LibboxNewStandaloneCommandClient (same IPC used by stopVPN).
         AsyncFunction("selectProxyNode") { (node: String) async throws -> Bool in

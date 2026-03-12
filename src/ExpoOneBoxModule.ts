@@ -16,6 +16,8 @@ declare class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
   getCoreLogEnabled(): boolean;
   getProxyNodes(): Promise<{ all: { tag: string; delay: number }[]; now: string }>;
   selectProxyNode(node: string): Promise<boolean>;
+  /** Trigger URLTest for a specific outbound tag or group tag (e.g. "ExitGateway"). */
+  triggerURLTest(tag: string): Promise<boolean>;
   getBestDns(): Promise<string>;
   /** iOS: fire a lightweight network request to trigger the system network-access permission prompt. */
   triggerNetworkPermission(): Promise<boolean>;
