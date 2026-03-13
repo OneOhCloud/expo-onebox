@@ -23,7 +23,7 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
     public func definition() -> ModuleDefinition {
         Name("ExpoOneBox")
 
-        Events("onStatusChange", "onError", "onLog", "onTrafficUpdate")
+        Events("onStatusChange", "onError", "onLog", "onTrafficUpdate", "onGroupUpdate")
 
         OnCreate {
             self.initializeLibbox()
@@ -602,6 +602,13 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
             "goroutines": Int(status.goroutines),
             "connectionsIn": Int(status.connectionsIn),
             "connectionsOut": Int(status.connectionsOut)
+        ])
+    }
+
+    internal func sendGroupUpdate(all: [[String: Any]], now: String) {
+        sendEvent("onGroupUpdate", [
+            "all": all,
+            "now": now
         ])
     }
 

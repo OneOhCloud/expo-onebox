@@ -30,6 +30,7 @@ import io.nekohasekai.libbox.ConnectionEvents
 import io.nekohasekai.libbox.Libbox
 import io.nekohasekai.libbox.LogEntry
 import io.nekohasekai.libbox.LogIterator
+import io.nekohasekai.libbox.OutboundGroup
 import io.nekohasekai.libbox.OutboundGroupIterator
 import io.nekohasekai.libbox.SetupOptions
 import io.nekohasekai.libbox.StatusMessage
@@ -61,7 +62,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
     private val statusMonitor by lazy {
         CommandClient(
             GlobalScope,
-            listOf(CommandClient.ConnectionType.Log, CommandClient.ConnectionType.Status),
+            listOf(CommandClient.ConnectionType.Log, CommandClient.ConnectionType.Status, CommandClient.ConnectionType.Groups),
             object : CommandClient.Handler {
                 override fun appendLogs(message: List<LogEntry>) {
                     if (!coreLogEnabled) return
@@ -91,6 +92,24 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
                                 "connectionsOut"      to status.connectionsOut
                             )
                         )
+                    } catch (_: Exception) {}
+                }
+                override fun updateGroups(newGroups: MutableList<OutboundGroup>) {
+                    try {
+                        val all = mutableListOf<Map<String, Any>>()
+                        var now = ""
+                        for (group in newGroups) {
+                            if (group.tag == "ExitGateway") {
+                                now = group.selected ?: ""
+                                val items = group.getItems()
+                                while (items?.hasNext() == true) {
+                                    val item = items.next()
+                                    all.add(mapOf("tag" to item.tag, "delay" to item.urlTestDelay.toInt()))
+                                }
+                                break
+                            }
+                        }
+                        sendEvent("onGroupUpdate", mapOf("all" to all, "now" to now))
                     } catch (_: Exception) {}
                 }
             }
@@ -144,7 +163,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
         Name("ExpoOneBox")
 
         // 定义发送到 JS 的事件
-        Events("onStatusChange", "onError", "onLog", "onTrafficUpdate")
+        Events("onStatusChange", "onError", "onLog", "onTrafficUpdate", "onGroupUpdate")
 
         OnCreate {
             try {

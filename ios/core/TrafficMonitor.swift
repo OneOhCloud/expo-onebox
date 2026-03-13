@@ -20,6 +20,7 @@ class TrafficMonitor: NSObject {
         let options = LibboxCommandClientOptions()
         options.addCommand(LibboxCommandStatus)
         options.addCommand(LibboxCommandLog)
+        options.addCommand(LibboxCommandGroup)
         options.statusInterval = Int64(NSEC_PER_SEC) // 1-second update interval
 
         let handler = ClientHandler(monitor: self)
@@ -64,6 +65,10 @@ class TrafficMonitor: NSObject {
 
     fileprivate func onLogMessage(level: Int32, message: String) {
         module?.sendLog(message: message)
+    }
+
+    fileprivate func onGroupUpdate(all: [[String: Any]], now: String) {
+        module?.sendGroupUpdate(all: all, now: now)
     }
 
     private func logLevelName(_ level: Int32) -> String {
@@ -121,7 +126,21 @@ private class ClientHandler: NSObject, LibboxCommandClientHandlerProtocol {
     }
 
     func writeGroups(_ message: (any LibboxOutboundGroupIteratorProtocol)?) {
-        // No-op - groups monitoring not needed for basic traffic display
+        guard let message, let monitor else { return }
+        var all: [[String: Any]] = []
+        var now = ""
+        while let group = message.next() {
+            if group.tag == "ExitGateway" {
+                now = group.selected
+                if let items = group.getItems() {
+                    while let item = items.next() {
+                        all.append(["tag": item.tag, "delay": Int(item.urlTestDelay)])
+                    }
+                }
+                break
+            }
+        }
+        monitor.onGroupUpdate(all: all, now: now)
     }
 
     func initializeClashMode(_ modeList: (any LibboxStringIteratorProtocol)?, currentMode: String?) {

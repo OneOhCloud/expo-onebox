@@ -63,6 +63,14 @@ export type TrafficUpdateEventPayload = {
   connectionsOut: number;
 };
 
+// 代理节点组更新事件（来自 CommandClient SubscribeGroups 流）
+export type GroupUpdateEventPayload = {
+  /** ExitGateway 下所有节点 */
+  all: { tag: string; delay: number }[];
+  /** 当前选中的节点 tag */
+  now: string;
+};
+
 export type OnLoadEventPayload = {
   url: string;
 };
@@ -72,6 +80,7 @@ export type ExpoOneBoxModuleEvents = {
   onError: (params: ErrorEventPayload) => void;
   onLog: (params: LogEventPayload) => void;
   onTrafficUpdate: (params: TrafficUpdateEventPayload) => void;
+  onGroupUpdate: (params: GroupUpdateEventPayload) => void;
   onChange: (params: ChangeEventPayload) => void;
 };
 
