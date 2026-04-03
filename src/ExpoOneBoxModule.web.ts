@@ -161,6 +161,37 @@ class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
     const idx = Math.floor(Math.random() * MOCK_DNS_LIST.length);
     return MOCK_DNS_LIST[idx];
   }
+
+  async fetchSubscription(_url: string, _userAgent: string) {
+    console.log('[Web Mock] fetchSubscription:', _url);
+    return { statusCode: 200, headers: {} as Record<string, string>, body: '' };
+  }
+
+  async registerBackgroundConfigRefresh(_url: string, _userAgent: string, _intervalSeconds: number): Promise<void> {
+    console.log('[Web Mock] registerBackgroundConfigRefresh');
+  }
+
+  async unregisterBackgroundConfigRefresh(): Promise<void> {}
+
+  async executeConfigRefreshNow(_url: string, _userAgent: string) {
+    return {
+      status: 'skipped' as const,
+      subscriptionUpload: 0,
+      subscriptionDownload: 0,
+      subscriptionTotal: 0,
+      subscriptionExpire: 0,
+      timestamp: new Date().toISOString(),
+      durationMs: 0,
+    };
+  }
+
+  getLastConfigRefreshResult() {
+    return null;
+  }
+
+  async isBackgroundConfigRefreshRegistered(): Promise<boolean> {
+    return false;
+  }
 }
 
 export default registerWebModule(ExpoOneBoxModule, 'ExpoOneBox');

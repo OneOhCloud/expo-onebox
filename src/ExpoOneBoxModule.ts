@@ -1,6 +1,6 @@
 import { NativeModule, requireNativeModule } from 'expo';
 
-import { ExpoOneBoxModuleEvents } from './ExpoOneBox.types';
+import { ConfigRefreshResult, ExpoOneBoxModuleEvents, SubscriptionFetchResult } from './ExpoOneBox.types';
 
 declare class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
   hello(): string;
@@ -9,6 +9,10 @@ declare class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
   stop(): Promise<void>;
   checkVpnPermission(): Promise<boolean>;
   requestVpnPermission(): Promise<boolean>;
+  /** Android only: returns true if the app is already exempt from battery optimizations. */
+  checkBatteryOptimizationExemption(): boolean;
+  /** Android only: shows the system dialog to request battery optimization exemption. Resolves with the final exemption state after the user dismisses the dialog. */
+  requestBatteryOptimizationExemption(): Promise<boolean>;
   getStatus(): number;
   /** Sync read of the last startup error written by the Extension/Service. Empty = no error. */
   getStartError(): string;
@@ -29,6 +33,27 @@ declare class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
    * @param sourceUri A file:// URI pointing to the bundled asset (from expo-asset localUri).
    */
   copy2CacheDbPath(sourceUri: string): Promise<boolean>;
+
+  /** Fetch a subscription URL using DNS resolution + SNI-overriding HTTPS. */
+  fetchSubscription(url: string, userAgent: string): Promise<SubscriptionFetchResult>;
+
+  /** Register (or update) the native periodic background config refresh. */
+  registerBackgroundConfigRefresh(url: string, userAgent: string, intervalSeconds: number): Promise<void>;
+
+  /** Cancel the scheduled background config refresh. */
+  unregisterBackgroundConfigRefresh(): Promise<void>;
+
+  /** Execute a config refresh immediately (returns result synchronously to JS). */
+  executeConfigRefreshNow(url: string, userAgent: string): Promise<ConfigRefreshResult>;
+
+  /**
+   * Return and clear the last result stored by the native background task.
+   * Returns null if no result has been stored since the last read.
+   */
+  getLastConfigRefreshResult(): ConfigRefreshResult | null;
+
+  /** Whether the native background refresh task is currently scheduled. */
+  isBackgroundConfigRefreshRegistered(): Promise<boolean>;
 }
 
 // This call loads the native module object from the JSI.

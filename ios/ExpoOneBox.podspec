@@ -24,7 +24,7 @@ Pod::Spec.new do |s|
   s.vendored_frameworks = "Libbox.xcframework"
 
   # System frameworks required by the module
-  s.frameworks = 'Network', 'UserNotifications'
+  s.frameworks = 'Network', 'UserNotifications', 'BackgroundTasks'
 
   s.pod_target_xcconfig = {
     'DEFINES_MODULE' => 'YES',

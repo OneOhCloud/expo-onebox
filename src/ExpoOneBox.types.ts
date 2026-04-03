@@ -75,6 +75,24 @@ export type OnLoadEventPayload = {
   url: string;
 };
 
+export interface SubscriptionFetchResult {
+  statusCode: number;
+  headers: Record<string, string>;
+  body: string;
+}
+
+export interface ConfigRefreshResult {
+  status: 'success' | 'failed' | 'skipped';
+  content?: string;
+  subscriptionUpload: number;
+  subscriptionDownload: number;
+  subscriptionTotal: number;
+  subscriptionExpire: number;
+  error?: string;
+  timestamp: string;
+  durationMs: number;
+}
+
 export type ExpoOneBoxModuleEvents = {
   onStatusChange: (params: StatusChangeEventPayload) => void;
   onError: (params: ErrorEventPayload) => void;
@@ -82,6 +100,7 @@ export type ExpoOneBoxModuleEvents = {
   onTrafficUpdate: (params: TrafficUpdateEventPayload) => void;
   onGroupUpdate: (params: GroupUpdateEventPayload) => void;
   onChange: (params: ChangeEventPayload) => void;
+  onConfigRefreshResult: (params: ConfigRefreshResult) => void;
 };
 
 export type ChangeEventPayload = {

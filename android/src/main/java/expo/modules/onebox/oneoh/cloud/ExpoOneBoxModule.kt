@@ -19,10 +19,14 @@ import expo.modules.onebox.oneoh.cloud.core.ServiceConnection
 import expo.modules.onebox.oneoh.cloud.core.VPNService
 import expo.modules.onebox.oneoh.cloud.helper.Action
 import expo.modules.onebox.oneoh.cloud.helper.Alert
+import expo.modules.onebox.oneoh.cloud.helper.BackgroundConfigWorker
+import expo.modules.onebox.oneoh.cloud.helper.BG_PREFS_NAME
 import expo.modules.onebox.oneoh.cloud.helper.Bugs
 import expo.modules.onebox.oneoh.cloud.helper.Status
+import expo.modules.onebox.oneoh.cloud.helper.fetchSubscription
 import expo.modules.onebox.oneoh.cloud.helper.findBestDnsServer
 import expo.modules.onebox.oneoh.cloud.helper.getWorkingDir
+import expo.modules.onebox.oneoh.cloud.helper.parseSubscriptionUserinfo
 import expo.modules.onebox.oneoh.cloud.helper.processConfig
 import io.nekohasekai.libbox.CommandClientHandler
 import io.nekohasekai.libbox.CommandClientOptions
@@ -54,6 +58,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
 
     private lateinit var connection: ServiceConnection
     private var vpnPermissionPromise: Promise? = null
+    private var batteryOptPromise: Promise? = null
 
     // ==================== 日志/流量实时监控 ====================
 
@@ -121,6 +126,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
 
         lateinit var application: Application
         const val VPN_REQUEST_CODE = 1001
+        const val BATTERY_OPT_REQUEST_CODE = 1002
 
         var currentStatus: Status = Status.Stopped
         var isStartingUp: Boolean = false
@@ -163,7 +169,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
         Name("ExpoOneBox")
 
         // 定义发送到 JS 的事件
-        Events("onStatusChange", "onError", "onLog", "onTrafficUpdate", "onGroupUpdate")
+        Events("onStatusChange", "onError", "onLog", "onTrafficUpdate", "onGroupUpdate", "onConfigRefreshResult")
 
         OnCreate {
             try {
@@ -193,6 +199,17 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
                 vpnPermissionPromise?.let { promise ->
                     promise.resolve(resultCode == Activity.RESULT_OK)
                     vpnPermissionPromise = null
+                }
+            }
+            if (requestCode == BATTERY_OPT_REQUEST_CODE) {
+                batteryOptPromise?.let { promise ->
+                    val exempt = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                        powerManager.isIgnoringBatteryOptimizations(context.packageName)
+                    } else {
+                        true
+                    }
+                    promise.resolve(exempt)
+                    batteryOptPromise = null
                 }
             }
         }
@@ -246,6 +263,34 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
             } else {
                 promise.resolve(true)
             }
+        }
+
+        Function("checkBatteryOptimizationExemption") {
+            return@Function if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                powerManager.isIgnoringBatteryOptimizations(context.packageName)
+            } else {
+                true
+            }
+        }
+
+        AsyncFunction("requestBatteryOptimizationExemption") { promise: Promise ->
+            if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.M) {
+                promise.resolve(true)
+                return@AsyncFunction
+            }
+            if (powerManager.isIgnoringBatteryOptimizations(context.packageName)) {
+                promise.resolve(true)
+                return@AsyncFunction
+            }
+            val intent = Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                data = android.net.Uri.parse("package:${context.packageName}")
+            }
+            batteryOptPromise = promise
+            appContext.currentActivity?.startActivityForResult(intent, BATTERY_OPT_REQUEST_CODE)
+                ?: run {
+                    batteryOptPromise = null
+                    promise.resolve(false)
+                }
         }
 
         // ---- copy2CacheDbPath: 将 JS 传入的 asset URI 原生复制为 tun.db，已存在则跳过 ----
@@ -416,6 +461,87 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
 
         AsyncFunction("getBestDns") {
             return@AsyncFunction runBlocking { findBestDnsServer() }
+        }
+
+        // ─── Subscription Fetching (DNS-resolved) ────────────────────────────────
+
+        // Fetch a subscription URL using DNS resolution + OkHttp with SNI override.
+        AsyncFunction("fetchSubscription") { url: String, userAgent: String ->
+            val result = runBlocking { fetchSubscription(url, userAgent) }
+            mapOf(
+                "statusCode" to result.statusCode,
+                "headers" to result.headers,
+                "body" to result.body,
+            )
+        }
+
+        // ─── Native Background Config Refresh ────────────────────────────────────
+
+        // Register (or update) the WorkManager periodic task.
+        AsyncFunction("registerBackgroundConfigRefresh") { url: String, userAgent: String, intervalSeconds: Int ->
+            context.getSharedPreferences(BG_PREFS_NAME, android.content.Context.MODE_PRIVATE)
+                .edit()
+                .putString("config_url", url)
+                .putString("user_agent", userAgent)
+                .putLong("interval_seconds", intervalSeconds.toLong())
+                .apply()
+            BackgroundConfigWorker.schedule(context, intervalSeconds.toLong())
+            Log.i(TAG, "Background config refresh registered (interval=${intervalSeconds}s)")
+        }
+
+        // Cancel the periodic WorkManager task.
+        AsyncFunction("unregisterBackgroundConfigRefresh") {
+            BackgroundConfigWorker.cancel(context)
+        }
+
+        // Execute config refresh immediately (foreground / dev screen).
+        AsyncFunction("executeConfigRefreshNow") { url: String, userAgent: String ->
+            val start = System.currentTimeMillis()
+            val timestamp = java.time.Instant.now().toString()
+            try {
+                val fetchResult = runBlocking { fetchSubscription(url, userAgent) }
+                val durationMs = System.currentTimeMillis() - start
+                if (fetchResult.statusCode < 200 || fetchResult.statusCode >= 300) {
+                    val result = expo.modules.onebox.oneoh.cloud.helper.ConfigRefreshResult(
+                        status = "failed", error = "HTTP ${fetchResult.statusCode}",
+                        timestamp = timestamp, durationMs = durationMs,
+                    )
+                    BackgroundConfigWorker.storeResult(context, result)
+                    return@AsyncFunction result.toMap()
+                }
+                val info = parseSubscriptionUserinfo(fetchResult.headers["subscription-userinfo"])
+                val result = expo.modules.onebox.oneoh.cloud.helper.ConfigRefreshResult(
+                    status = "success",
+                    content = fetchResult.body,
+                    subscriptionUpload = info.upload,
+                    subscriptionDownload = info.download,
+                    subscriptionTotal = info.total,
+                    subscriptionExpire = info.expire,
+                    timestamp = timestamp,
+                    durationMs = durationMs,
+                )
+                BackgroundConfigWorker.storeResult(context, result)
+                return@AsyncFunction result.toMap()
+            } catch (e: Exception) {
+                val result = expo.modules.onebox.oneoh.cloud.helper.ConfigRefreshResult(
+                    status = "failed", error = e.message ?: "Unknown error",
+                    timestamp = timestamp, durationMs = System.currentTimeMillis() - start,
+                )
+                BackgroundConfigWorker.storeResult(context, result)
+                return@AsyncFunction result.toMap()
+            }
+        }
+
+        // Return and clear the last result stored by the background worker.
+        Function("getLastConfigRefreshResult") {
+            val result = BackgroundConfigWorker.loadLastResult(context) ?: return@Function null
+            BackgroundConfigWorker.clearLastResult(context)
+            return@Function result
+        }
+
+        // Whether a WorkManager periodic task is currently enqueued/running.
+        AsyncFunction("isBackgroundConfigRefreshRegistered") {
+            BackgroundConfigWorker.isRegistered(context)
         }
 
         View(ExpoOneBoxView::class) {

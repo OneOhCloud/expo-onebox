@@ -23,7 +23,7 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
     public func definition() -> ModuleDefinition {
         Name("ExpoOneBox")
 
-        Events("onStatusChange", "onError", "onLog", "onTrafficUpdate", "onGroupUpdate")
+        Events("onStatusChange", "onError", "onLog", "onTrafficUpdate", "onGroupUpdate", "onConfigRefreshResult")
 
         OnCreate {
             self.initializeLibbox()
@@ -181,6 +181,62 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
                 }
                 task.resume()
             }
+        }
+
+        // ─── Subscription Fetching (DNS-resolved) ────────────────────────────────
+
+        // Fetch a subscription URL using the best DNS server for resolution.
+        // Resolves the hostname via a raw UDP A-record query, then makes HTTPS request
+        // to the resolved IP with TLS SNI override for the original hostname.
+        AsyncFunction("fetchSubscription") { (url: String, userAgent: String) async throws -> [String: Any] in
+            guard let parsedURL = URL(string: url) else {
+                throw NSError(domain: "ExpoOneBox", code: -1,
+                              userInfo: [NSLocalizedDescriptionKey: "Malformed URL: \(url)"])
+            }
+            let result = try await SubscriptionFetcher.fetch(url: parsedURL, userAgent: userAgent)
+            return [
+                "statusCode": result.statusCode,
+                "headers": result.headers,
+                "body": result.body,
+            ]
+        }
+
+        // ─── Native Background Config Refresh ────────────────────────────────────
+
+        // Register (or update) the native background config refresh task.
+        // Persists URL, userAgent, and interval to AppGroup UserDefaults, then
+        // submits a BGAppRefreshTaskRequest so iOS wakes the app periodically.
+        AsyncFunction("registerBackgroundConfigRefresh") { (url: String, userAgent: String, intervalSeconds: Int) async in
+            BackgroundConfigRefresh.saveConfig(url: url, userAgent: userAgent, intervalSeconds: intervalSeconds)
+            BackgroundConfigRefresh.scheduleNextRefresh()
+            NSLog("[ExpoOneBox] Background config refresh registered (interval=\(intervalSeconds)s)")
+        }
+
+        // Cancel the scheduled background refresh and clear the registered flag.
+        AsyncFunction("unregisterBackgroundConfigRefresh") { () async in
+            BackgroundConfigRefresh.cancelScheduled()
+        }
+
+        // Execute a config refresh immediately (used from foreground / dev screen).
+        // Uses the same DNS-resolved fetcher as the background task.
+        AsyncFunction("executeConfigRefreshNow") { (url: String, userAgent: String) async -> [String: Any] in
+            let result = await BackgroundConfigRefresh.executeRefreshWith(url: url, userAgent: userAgent)
+            BackgroundConfigRefresh.storeResult(result)
+            return result.toDictionary()
+        }
+
+        // Return the last result stored by the background task (or nil if none).
+        // Call this on foreground to sync native results into JS state.
+        // Clears the stored result after reading so subsequent calls return nil.
+        Function("getLastConfigRefreshResult") { () -> [String: Any]? in
+            guard let result = BackgroundConfigRefresh.loadLastResult() else { return nil }
+            BackgroundConfigRefresh.clearLastResult()
+            return result
+        }
+
+        // Whether a background refresh task is currently scheduled.
+        AsyncFunction("isBackgroundConfigRefreshRegistered") { () async -> Bool in
+            BackgroundConfigRefresh.isRegistered()
         }
 
         // Copies the bundled asset (sourceUri = file:// URI) into the AppGroup Caches dir as tun.db.
