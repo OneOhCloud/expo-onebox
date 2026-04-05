@@ -57,7 +57,7 @@ struct SubscriptionFetcher {
                 throw SubscriptionFetcherError.malformedURL
             }
 
-            let port = UInt16(components.port ?? (scheme == "https" ? 443 : 80))!
+            let port = UInt16(exactly: components.port ?? (scheme == "https" ? 443 : 80))!
 
             var requestPath = components.percentEncodedPath
             if requestPath.isEmpty { requestPath = "/" }
