@@ -18,6 +18,7 @@ private enum SubscriptionFetcherError: Error, LocalizedError {
     case malformedDNSResponse
     case invalidResponse
     case timeout
+    case tooManyRedirects
 
     var errorDescription: String? {
         switch self {
@@ -27,6 +28,7 @@ private enum SubscriptionFetcherError: Error, LocalizedError {
         case .malformedDNSResponse:       return "Malformed DNS response"
         case .invalidResponse:            return "Invalid HTTP response"
         case .timeout:                    return "Request timed out"
+        case .tooManyRedirects:           return "Too many redirects"
         }
     }
 }
@@ -45,42 +47,62 @@ struct SubscriptionFetcher {
     /// This ensures the server presents the correct certificate, and the system
     /// TLS stack performs full trust evaluation without any manual overrides.
     static func fetch(url: URL, userAgent: String) async throws -> SubscriptionFetchResult {
-        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-              let host       = components.host,
-              let scheme     = components.scheme else {
-            throw SubscriptionFetcherError.malformedURL
-        }
+        var currentURL = url
+        let maxRedirects = 5
 
-        let port = UInt16(components.port ?? (scheme == "https" ? 443 : 80))!
-
-        var requestPath = components.percentEncodedPath
-        if requestPath.isEmpty { requestPath = "/" }
-        if let q = components.percentEncodedQuery { requestPath += "?" + q }
-
-        // Resolve hostname to IP via the best DNS server.
-        // Skip resolution for bare IP addresses.
-        let connectTarget: String
-        if isIPAddress(host) {
-            connectTarget = host
-        } else {
-            let bestDns = await DnsTester.findBest()
-            do {
-                connectTarget = try await resolveHostname(host, via: bestDns)
-                NSLog("[SubscriptionFetcher] Resolved %@ → %@ via %@", host, connectTarget, bestDns)
-            } catch {
-                NSLog("[SubscriptionFetcher] DNS failed (%@), falling back to hostname", error.localizedDescription)
-                connectTarget = host   // let NWConnection use system DNS
+        for _ in 0...maxRedirects {
+            guard let components = URLComponents(url: currentURL, resolvingAgainstBaseURL: false),
+                  let host       = components.host,
+                  let scheme     = components.scheme else {
+                throw SubscriptionFetcherError.malformedURL
             }
+
+            let port = UInt16(components.port ?? (scheme == "https" ? 443 : 80))!
+
+            var requestPath = components.percentEncodedPath
+            if requestPath.isEmpty { requestPath = "/" }
+            if let q = components.percentEncodedQuery { requestPath += "?" + q }
+
+            // Resolve hostname to IP via the best DNS server.
+            // Skip resolution for bare IP addresses.
+            let connectTarget: String
+            if isIPAddress(host) {
+                connectTarget = host
+            } else {
+                let bestDns = await DnsTester.findBest()
+                do {
+                    connectTarget = try await resolveHostname(host, via: bestDns)
+                    NSLog("[SubscriptionFetcher] Resolved %@ → %@ via %@", host, connectTarget, bestDns)
+                } catch {
+                    NSLog("[SubscriptionFetcher] DNS failed (%@), falling back to hostname", error.localizedDescription)
+                    connectTarget = host   // let NWConnection use system DNS
+                }
+            }
+
+            let result = try await performRequest(
+                host:          host,
+                connectTarget: connectTarget,
+                port:          port,
+                path:          requestPath,
+                useTLS:        scheme == "https",
+                userAgent:     userAgent
+            )
+
+            // Follow standard 3xx redirects (301, 302, 303, 307, 308).
+            // Subscription URLs frequently redirect, and silently returning a
+            // redirect response would leave the caller with an empty body.
+            if (301...308).contains(result.statusCode),
+               let location = result.headers["location"],
+               let redirectURL = URL(string: location, relativeTo: currentURL)?.absoluteURL {
+                NSLog("[SubscriptionFetcher] Redirect %d → %@", result.statusCode, redirectURL.absoluteString)
+                currentURL = redirectURL
+                continue
+            }
+
+            return result
         }
 
-        return try await performRequest(
-            host:          host,
-            connectTarget: connectTarget,
-            port:          port,
-            path:          requestPath,
-            useTLS:        scheme == "https",
-            userAgent:     userAgent
-        )
+        throw SubscriptionFetcherError.tooManyRedirects
     }
 
     // MARK: - NWConnection HTTP(S) Request
@@ -102,15 +124,15 @@ struct SubscriptionFetcher {
 
         let parameters: NWParameters
         if useTLS {
-            parameters = NWParameters.tls
-            // Inject the original hostname as TLS SNI.
-            // Without this, dialing an IP sends no SNI and the server may return
-            // the wrong certificate, causing trust evaluation to fail.
-            if let tlsOpts = parameters.defaultProtocolStack
-                    .applicationProtocols.first as? NWProtocolTLS.Options {
-                sec_protocol_options_set_tls_server_name(
-                    tlsOpts.securityProtocolOptions, host)
-            }
+            // Explicitly create TLS options so SNI injection is guaranteed.
+            // NWParameters.tls is a factory property (new instance each access), and
+            // casting applicationProtocols.first to NWProtocolTLS.Options fails silently
+            // on some iOS versions — leaving SNI unset and causing cert trust failure
+            // when connectTarget is a bare IP address.
+            let tlsOptions = NWProtocolTLS.Options()
+            sec_protocol_options_set_tls_server_name(
+                tlsOptions.securityProtocolOptions, host)
+            parameters = NWParameters(tls: tlsOptions)
         } else {
             parameters = NWParameters.tcp
         }
@@ -261,7 +283,12 @@ struct SubscriptionFetcher {
 
             conn.start(queue: queue)
 
-            // 30-second wall-clock timeout (fires on global queue)
+            // 30-second wall-clock timeout (fires on global queue).
+            // finish() is NSLock-guarded so this cross-queue call is safe.
+            // conn.cancel() inside finish() triggers a .cancelled state callback
+            // on `queue`, but by then finished == true so it is a no-op.
+            // Queued receiveMore() closures on `queue` also see finished == true
+            // and return immediately — no double-resume risk.
             DispatchQueue.global().asyncAfter(deadline: .now() + 30) {
                 finish(.failure(SubscriptionFetcherError.timeout))
             }
@@ -287,7 +314,9 @@ struct SubscriptionFetcher {
             let end   = start + chunkSize
             guard end <= data.count else { break }
             result.append(data[start ..< end])
-            offset = end + 2   // skip trailing \r\n after chunk data
+            let nextOffset = end + 2   // skip trailing \r\n after chunk data
+            guard nextOffset <= data.count else { break }
+            offset = nextOffset
         }
         return result
     }
@@ -345,7 +374,7 @@ struct SubscriptionFetcher {
                     return
                 }
 
-                var buf = [UInt8](repeating: 0, count: 512)
+                var buf = [UInt8](repeating: 0, count: 4096)
                 let n   = recv(fd, &buf, buf.count, 0)
 
                 lock.withLock {
