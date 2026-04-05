@@ -1,5 +1,5 @@
 import Foundation
-import Security
+import Network
 
 // MARK: - Result Type
 
@@ -17,53 +17,16 @@ private enum SubscriptionFetcherError: Error, LocalizedError {
     case noARecord
     case malformedDNSResponse
     case invalidResponse
+    case timeout
 
     var errorDescription: String? {
         switch self {
-        case .malformedURL: return "Malformed URL"
-        case .dnsResolutionFailed(let reason): return "DNS resolution failed: \(reason)"
-        case .noARecord: return "No A record found in DNS response"
-        case .malformedDNSResponse: return "Malformed DNS response"
-        case .invalidResponse: return "Invalid HTTP response"
-        }
-    }
-}
-
-// MARK: - TLS SNI Override Delegate
-// When connecting to an IP address, URLSession validates TLS against the IP.
-// This delegate re-evaluates the server certificate against the original hostname,
-// allowing the connection to succeed for dedicated servers.
-
-private final class SNISessionDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
-    let originalHostname: String
-
-    init(hostname: String) {
-        self.originalHostname = hostname
-    }
-
-    func urlSession(
-        _ session: URLSession,
-        task: URLSessionTask,
-        didReceive challenge: URLAuthenticationChallenge,
-        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
-    ) {
-        guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
-              let serverTrust = challenge.protectionSpace.serverTrust else {
-            completionHandler(.performDefaultHandling, nil)
-            return
-        }
-
-        // Override certificate evaluation to validate against the original hostname (not the IP)
-        let policy = SecPolicyCreateSSL(true, originalHostname as CFString)
-        SecTrustSetPolicies(serverTrust, [policy] as CFArray)
-        SecTrustSetNetworkFetchAllowed(serverTrust, true)
-
-        var error: CFError?
-        if SecTrustEvaluateWithError(serverTrust, &error) {
-            completionHandler(.useCredential, URLCredential(trust: serverTrust))
-        } else {
-            NSLog("[SubscriptionFetcher] TLS validation failed for \(originalHostname): \(error?.localizedDescription ?? "unknown")")
-            completionHandler(.cancelAuthenticationChallenge, nil)
+        case .malformedURL:               return "Malformed URL"
+        case .dnsResolutionFailed(let r): return "DNS resolution failed: \(r)"
+        case .noARecord:                  return "No A record in DNS response"
+        case .malformedDNSResponse:       return "Malformed DNS response"
+        case .invalidResponse:            return "Invalid HTTP response"
+        case .timeout:                    return "Request timed out"
         }
     }
 }
@@ -75,70 +38,265 @@ struct SubscriptionFetcher {
     // MARK: - Public API
 
     /// Fetch a subscription URL using the best DNS server for resolution.
-    /// Resolves the hostname via a custom DNS A-record query, then makes the
-    /// HTTP(S) request to the resolved IP with proper Host header and TLS SNI handling.
-    /// Falls back to direct fetch if DNS resolution fails.
+    ///
+    /// Resolves the hostname via a raw UDP A-record query, then connects using
+    /// Network.framework (NWConnection) which lets us explicitly set the TLS SNI
+    /// to the original hostname — even though we dial the resolved IP address.
+    /// This ensures the server presents the correct certificate, and the system
+    /// TLS stack performs full trust evaluation without any manual overrides.
     static func fetch(url: URL, userAgent: String) async throws -> SubscriptionFetchResult {
-        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-              let originalHost = components.host else {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let host       = components.host,
+              let scheme     = components.scheme else {
             throw SubscriptionFetcherError.malformedURL
         }
 
-        // Skip DNS resolution for IP addresses (already an IP, no hostname to resolve)
-        if isIPAddress(originalHost) {
-            return try await fetchDirect(url: url, userAgent: userAgent)
+        let port = UInt16(components.port ?? (scheme == "https" ? 443 : 80))!
+
+        var requestPath = components.percentEncodedPath
+        if requestPath.isEmpty { requestPath = "/" }
+        if let q = components.percentEncodedQuery { requestPath += "?" + q }
+
+        // Resolve hostname to IP via the best DNS server.
+        // Skip resolution for bare IP addresses.
+        let connectTarget: String
+        if isIPAddress(host) {
+            connectTarget = host
+        } else {
+            let bestDns = await DnsTester.findBest()
+            do {
+                connectTarget = try await resolveHostname(host, via: bestDns)
+                NSLog("[SubscriptionFetcher] Resolved %@ → %@ via %@", host, connectTarget, bestDns)
+            } catch {
+                NSLog("[SubscriptionFetcher] DNS failed (%@), falling back to hostname", error.localizedDescription)
+                connectTarget = host   // let NWConnection use system DNS
+            }
         }
 
-        let bestDns = await DnsTester.findBest()
-        let resolvedIP: String
-        do {
-            resolvedIP = try await resolveHostname(originalHost, via: bestDns)
-        } catch {
-            // DNS resolution failed — fall back to system DNS
-            NSLog("[SubscriptionFetcher] DNS resolution failed (\(error.localizedDescription)), falling back to direct fetch")
-            return try await fetchDirect(url: url, userAgent: userAgent)
-        }
-
-        NSLog("[SubscriptionFetcher] Resolved \(originalHost) → \(resolvedIP) via \(bestDns)")
-
-        // Replace host in URL with resolved IP, preserving scheme/port/path/query
-        components.host = resolvedIP
-        guard let resolvedURL = components.url else {
-            throw SubscriptionFetcherError.malformedURL
-        }
-
-        var request = URLRequest(url: resolvedURL)
-        request.setValue(originalHost, forHTTPHeaderField: "Host")
-        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
-        request.setValue("application/json, */*", forHTTPHeaderField: "Accept")
-        request.httpMethod = "GET"
-        request.timeoutInterval = 30
-
-        let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 30
-        config.timeoutIntervalForResource = 60
-
-        let delegate = SNISessionDelegate(hostname: originalHost)
-        let session = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
-        defer { session.finishTasksAndInvalidate() }
-
-        let (data, response) = try await session.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw SubscriptionFetcherError.invalidResponse
-        }
-
-        return SubscriptionFetchResult(
-            statusCode: httpResponse.statusCode,
-            headers: extractHeaders(httpResponse),
-            body: String(data: data, encoding: .utf8) ?? ""
+        return try await performRequest(
+            host:          host,
+            connectTarget: connectTarget,
+            port:          port,
+            path:          requestPath,
+            useTLS:        scheme == "https",
+            userAgent:     userAgent
         )
+    }
+
+    // MARK: - NWConnection HTTP(S) Request
+
+    /// Makes an HTTP/1.1 request over NWConnection.
+    ///
+    /// When `useTLS` is true the TLS SNI is explicitly set to `host`, so the
+    /// server selects the correct certificate even when `connectTarget` is a bare
+    /// IP address.  Full system trust evaluation applies — no manual SecTrust
+    /// overrides needed.
+    private static func performRequest(
+        host:          String,   // original hostname (Host header + TLS SNI)
+        connectTarget: String,   // resolved IP or hostname to dial
+        port:          UInt16,
+        path:          String,
+        useTLS:        Bool,
+        userAgent:     String
+    ) async throws -> SubscriptionFetchResult {
+
+        let parameters: NWParameters
+        if useTLS {
+            parameters = NWParameters.tls
+            // Inject the original hostname as TLS SNI.
+            // Without this, dialing an IP sends no SNI and the server may return
+            // the wrong certificate, causing trust evaluation to fail.
+            if let tlsOpts = parameters.defaultProtocolStack
+                    .applicationProtocols.first as? NWProtocolTLS.Options {
+                sec_protocol_options_set_tls_server_name(
+                    tlsOpts.securityProtocolOptions, host)
+            }
+        } else {
+            parameters = NWParameters.tcp
+        }
+
+        let conn = NWConnection(
+            host: NWEndpoint.Host(connectTarget),
+            port: NWEndpoint.Port(rawValue: port)!,
+            using: parameters
+        )
+        // Serial queue: all NWConnection callbacks, HTTP parsing, and state
+        // mutations happen here — no additional locking required inside callbacks.
+        let queue = DispatchQueue(label: "com.onebox.sub-fetch", qos: .userInitiated)
+
+        return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<SubscriptionFetchResult, Error>) in
+
+            // ── Finish helper ─────────────────────────────────────────────────
+            // Called from the serial `queue` (callbacks) or the global timeout.
+            // A simple atomic flag + NSLock guards the timeout cross-queue path.
+            var finished = false
+            let finishLock = NSLock()
+
+            func finish(_ result: Result<SubscriptionFetchResult, Error>) {
+                finishLock.lock(); defer { finishLock.unlock() }
+                guard !finished else { return }
+                finished = true
+                conn.cancel()
+                switch result {
+                case .success(let r): cont.resume(returning: r)
+                case .failure(let e): cont.resume(throwing: e)
+                }
+            }
+
+            // ── HTTP response state (accessed only on `queue`) ────────────────
+            var rawData     = Data()
+            var headersEnd: Int?              // byte offset past the \r\n\r\n separator
+            var statusCode  = 0
+            var respHeaders = [String: String]()
+            var contentLength: Int? = nil
+            var isChunked   = false
+
+            // ── Header parser ─────────────────────────────────────────────────
+            func parseHeadersIfNeeded() {
+                guard headersEnd == nil else { return }
+                let sep = Data([0x0D, 0x0A, 0x0D, 0x0A])
+                guard let sepRange = rawData.range(of: sep) else { return }
+
+                guard let headerStr = String(data: rawData[rawData.startIndex ..< sepRange.lowerBound],
+                                             encoding: .utf8) else {
+                    finish(.failure(SubscriptionFetcherError.invalidResponse))
+                    return
+                }
+                var lines = headerStr.components(separatedBy: "\r\n")
+                guard !lines.isEmpty else {
+                    finish(.failure(SubscriptionFetcherError.invalidResponse))
+                    return
+                }
+
+                // Status line: "HTTP/1.x 200 Reason"
+                let parts = lines.removeFirst().split(separator: " ", maxSplits: 2)
+                if parts.count >= 2 { statusCode = Int(parts[1]) ?? 0 }
+
+                // Header fields
+                for line in lines where !line.isEmpty {
+                    guard let colon = line.firstIndex(of: ":") else { continue }
+                    let k = line[..<colon].trimmingCharacters(in: .whitespaces).lowercased()
+                    let v = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+                    respHeaders[k] = v
+                }
+
+                headersEnd    = rawData.distance(from: rawData.startIndex, to: sepRange.upperBound)
+                contentLength = respHeaders["content-length"].flatMap { Int($0) }
+                isChunked     = respHeaders["transfer-encoding"]?.lowercased().contains("chunked") ?? false
+            }
+
+            // ── Body completion check (Content-Length path) ───────────────────
+            func tryCompleteWithContentLength() {
+                guard let start = headersEnd, let needed = contentLength else { return }
+                let body = rawData.dropFirst(start)
+                guard body.count >= needed else { return }
+                let text = String(data: body.prefix(needed), encoding: .utf8) ?? ""
+                finish(.success(SubscriptionFetchResult(
+                    statusCode: statusCode, headers: respHeaders, body: text)))
+            }
+
+            // ── Connection-close / chunked completion ─────────────────────────
+            func completeOnEOF() {
+                guard let start = headersEnd else {
+                    finish(.failure(SubscriptionFetcherError.invalidResponse))
+                    return
+                }
+                let bodyData = Data(rawData.dropFirst(start))
+                let text: String
+                if isChunked {
+                    text = String(data: decodeChunked(bodyData), encoding: .utf8) ?? ""
+                } else {
+                    text = String(data: bodyData, encoding: .utf8) ?? ""
+                }
+                finish(.success(SubscriptionFetchResult(
+                    statusCode: statusCode, headers: respHeaders, body: text)))
+            }
+
+            // ── Recursive receive ─────────────────────────────────────────────
+            func receiveMore() {
+                guard !finished else { return }
+                conn.receive(minimumIncompleteLength: 1, maximumLength: 131_072) { chunk, _, isComplete, error in
+                    if let chunk, !chunk.isEmpty { rawData.append(chunk) }
+
+                    parseHeadersIfNeeded()
+                    tryCompleteWithContentLength()
+
+                    if isComplete {
+                        completeOnEOF()
+                        return
+                    }
+                    if let error {
+                        // posix ENOTCONN / cancelled = server closed connection
+                        // treat as EOF if we have headers already
+                        if headersEnd != nil {
+                            completeOnEOF()
+                        } else {
+                            finish(.failure(error))
+                        }
+                        return
+                    }
+                    receiveMore()
+                }
+            }
+
+            // ── Connection state machine ──────────────────────────────────────
+            conn.stateUpdateHandler = { state in
+                switch state {
+                case .ready:
+                    let req = "GET \(path) HTTP/1.1\r\n" +
+                              "Host: \(host)\r\n" +
+                              "User-Agent: \(userAgent)\r\n" +
+                              "Accept: */*\r\n" +
+                              "Connection: close\r\n\r\n"
+                    conn.send(content: req.data(using: .utf8),
+                              completion: .contentProcessed { err in
+                        if let err { finish(.failure(err)); return }
+                        receiveMore()
+                    })
+                case .failed(let err): finish(.failure(err))
+                case .cancelled:       break   // already handled by finish()
+                default:               break
+                }
+            }
+
+            conn.start(queue: queue)
+
+            // 30-second wall-clock timeout (fires on global queue)
+            DispatchQueue.global().asyncAfter(deadline: .now() + 30) {
+                finish(.failure(SubscriptionFetcherError.timeout))
+            }
+        }
+    }
+
+    // MARK: - Chunked Transfer Encoding Decoder
+
+    private static func decodeChunked(_ data: Data) -> Data {
+        var result = Data()
+        var offset = 0
+        let crlf   = Data([0x0D, 0x0A])
+
+        while offset < data.count {
+            guard let eol = data.range(of: crlf, in: offset ..< data.count) else { break }
+            let sizeLine = String(data: data[offset ..< eol.lowerBound], encoding: .utf8) ?? ""
+            // Strip chunk extensions (e.g. "1a; ext=foo" → "1a")
+            let sizeHex  = sizeLine.split(separator: ";").first.map(String.init) ?? sizeLine
+            guard let chunkSize = Int(sizeHex.trimmingCharacters(in: .whitespaces), radix: 16),
+                  chunkSize > 0 else { break }
+
+            let start = eol.upperBound
+            let end   = start + chunkSize
+            guard end <= data.count else { break }
+            result.append(data[start ..< end])
+            offset = end + 2   // skip trailing \r\n after chunk data
+        }
+        return result
     }
 
     // MARK: - DNS A-Record Resolution
 
     /// Resolve a hostname to an IPv4 address using the given DNS server IP.
     static func resolveHostname(_ hostname: String, via dnsServer: String) async throws -> String {
-        let txID = UInt16.random(in: 1...0xFFFF)
+        let txID  = UInt16.random(in: 1...0xFFFF)
         let query = buildAQuery(for: hostname, transactionID: txID)
 
         return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<String, Error>) in
@@ -146,81 +304,68 @@ struct SubscriptionFetcher {
             let lock = NSLock()
 
             DispatchQueue.global(qos: .userInitiated).async {
-                let socketFD = socket(AF_INET, SOCK_DGRAM, 0)
-                guard socketFD > 0 else {
+                let fd = socket(AF_INET, SOCK_DGRAM, 0)
+                guard fd > 0 else {
                     lock.withLock {
-                        guard !resumed else { return }
-                        resumed = true
+                        guard !resumed else { return }; resumed = true
                         continuation.resume(throwing: SubscriptionFetcherError.dnsResolutionFailed("socket() failed"))
                     }
                     return
                 }
-                defer { close(socketFD) }
+                defer { close(fd) }
 
-                var timeout = timeval(tv_sec: 0, tv_usec: 500_000) // 500 ms
-                setsockopt(socketFD, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+                var tv = timeval(tv_sec: 0, tv_usec: 500_000)
+                setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
 
-                var serverAddr = sockaddr_in()
-                serverAddr.sin_family = sa_family_t(AF_INET)
-                serverAddr.sin_port = UInt16(53).bigEndian
-                guard inet_pton(AF_INET, dnsServer, &serverAddr.sin_addr) == 1 else {
+                var addr = sockaddr_in()
+                addr.sin_family = sa_family_t(AF_INET)
+                addr.sin_port   = UInt16(53).bigEndian
+                guard inet_pton(AF_INET, dnsServer, &addr.sin_addr) == 1 else {
                     lock.withLock {
-                        guard !resumed else { return }
-                        resumed = true
-                        continuation.resume(throwing: SubscriptionFetcherError.dnsResolutionFailed("Invalid DNS server: \(dnsServer)"))
+                        guard !resumed else { return }; resumed = true
+                        continuation.resume(throwing: SubscriptionFetcherError.dnsResolutionFailed("Invalid server: \(dnsServer)"))
                     }
                     return
                 }
 
                 let sent = query.withUnsafeBytes { bytes in
-                    withUnsafePointer(to: &serverAddr) { addrPtr in
-                        addrPtr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
-                            sendto(socketFD, bytes.bindMemory(to: UInt8.self).baseAddress,
-                                   query.count, 0, sockPtr,
+                    withUnsafePointer(to: &addr) { ap in
+                        ap.withMemoryRebound(to: sockaddr.self, capacity: 1) { sp in
+                            sendto(fd, bytes.bindMemory(to: UInt8.self).baseAddress,
+                                   query.count, 0, sp,
                                    socklen_t(MemoryLayout<sockaddr_in>.size))
                         }
                     }
                 }
                 guard sent > 0 else {
                     lock.withLock {
-                        guard !resumed else { return }
-                        resumed = true
+                        guard !resumed else { return }; resumed = true
                         continuation.resume(throwing: SubscriptionFetcherError.dnsResolutionFailed("sendto() failed"))
                     }
                     return
                 }
 
-                var buffer = [UInt8](repeating: 0, count: 512)
-                let received = recv(socketFD, &buffer, buffer.count, 0)
+                var buf = [UInt8](repeating: 0, count: 512)
+                let n   = recv(fd, &buf, buf.count, 0)
 
                 lock.withLock {
-                    guard !resumed else { return }
-                    resumed = true
-
-                    guard received >= 12 else {
-                        continuation.resume(throwing: SubscriptionFetcherError.malformedDNSResponse)
-                        return
+                    guard !resumed else { return }; resumed = true
+                    guard n >= 12 else {
+                        continuation.resume(throwing: SubscriptionFetcherError.malformedDNSResponse); return
                     }
-                    // Verify transaction ID matches
-                    let responseID = (UInt16(buffer[0]) << 8) | UInt16(buffer[1])
-                    guard responseID == txID else {
-                        continuation.resume(throwing: SubscriptionFetcherError.malformedDNSResponse)
-                        return
+                    let respID = (UInt16(buf[0]) << 8) | UInt16(buf[1])
+                    guard respID == txID else {
+                        continuation.resume(throwing: SubscriptionFetcherError.malformedDNSResponse); return
                     }
-                    // Check QR bit (response=1) and RCODE (no error=0)
-                    guard (buffer[2] & 0x80) != 0, (buffer[3] & 0x0F) == 0 else {
-                        let rcode = buffer[3] & 0x0F
-                        continuation.resume(throwing: SubscriptionFetcherError.dnsResolutionFailed("RCODE=\(rcode)"))
-                        return
+                    guard (buf[2] & 0x80) != 0, (buf[3] & 0x0F) == 0 else {
+                        continuation.resume(throwing: SubscriptionFetcherError.dnsResolutionFailed("RCODE=\(buf[3] & 0x0F)")); return
                     }
-                    // Answer count
-                    let ancount = Int((UInt16(buffer[6]) << 8) | UInt16(buffer[7]))
+                    let ancount = Int((UInt16(buf[6]) << 8) | UInt16(buf[7]))
                     guard ancount > 0 else {
-                        continuation.resume(throwing: SubscriptionFetcherError.noARecord)
-                        return
+                        continuation.resume(throwing: SubscriptionFetcherError.noARecord); return
                     }
                     do {
-                        let ip = try parseFirstARecord(from: buffer, length: received, ancount: ancount)
+                        let ip = try parseFirstARecord(from: buf, length: n, ancount: ancount)
                         continuation.resume(returning: ip)
                     } catch {
                         continuation.resume(throwing: error)
@@ -230,104 +375,65 @@ struct SubscriptionFetcher {
         }
     }
 
-    // MARK: - Private: Fallback Direct Fetch
-
-    private static func fetchDirect(url: URL, userAgent: String) async throws -> SubscriptionFetchResult {
-        var request = URLRequest(url: url)
-        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
-        request.setValue("application/json, */*", forHTTPHeaderField: "Accept")
-        request.httpMethod = "GET"
-        request.timeoutInterval = 30
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw SubscriptionFetcherError.invalidResponse
-        }
-        return SubscriptionFetchResult(
-            statusCode: httpResponse.statusCode,
-            headers: extractHeaders(httpResponse),
-            body: String(data: data, encoding: .utf8) ?? ""
-        )
-    }
-
-    // MARK: - Private: DNS Packet Helpers
+    // MARK: - DNS Packet Helpers
 
     private static func buildAQuery(for hostname: String, transactionID: UInt16) -> Data {
-        var data = Data()
-        data.append(UInt8(transactionID >> 8))
-        data.append(UInt8(transactionID & 0xFF))
-        data.append(contentsOf: [0x01, 0x00]) // Flags: RD=1
-        data.append(contentsOf: [0x00, 0x01]) // QDCOUNT = 1
-        data.append(contentsOf: [0x00, 0x00]) // ANCOUNT = 0
-        data.append(contentsOf: [0x00, 0x00]) // NSCOUNT = 0
-        data.append(contentsOf: [0x00, 0x00]) // ARCOUNT = 0
-        // QNAME: encode hostname as DNS labels
+        var d = Data()
+        d.append(UInt8(transactionID >> 8))
+        d.append(UInt8(transactionID & 0xFF))
+        d.append(contentsOf: [0x01, 0x00])   // Flags: RD=1
+        d.append(contentsOf: [0x00, 0x01])   // QDCOUNT=1
+        d.append(contentsOf: [0x00, 0x00])   // ANCOUNT=0
+        d.append(contentsOf: [0x00, 0x00])   // NSCOUNT=0
+        d.append(contentsOf: [0x00, 0x00])   // ARCOUNT=0
         for label in hostname.split(separator: ".") {
             let bytes = [UInt8](label.utf8)
-            data.append(UInt8(bytes.count))
-            data.append(contentsOf: bytes)
+            d.append(UInt8(bytes.count))
+            d.append(contentsOf: bytes)
         }
-        data.append(0x00)                      // null terminator
-        data.append(contentsOf: [0x00, 0x01]) // QTYPE = A
-        data.append(contentsOf: [0x00, 0x01]) // QCLASS = IN
-        return data
+        d.append(0x00)
+        d.append(contentsOf: [0x00, 0x01])   // QTYPE=A
+        d.append(contentsOf: [0x00, 0x01])   // QCLASS=IN
+        return d
     }
 
-    /// Parse DNS response and return the first IPv4 address from an A record answer.
-    private static func parseFirstARecord(from buffer: [UInt8], length: Int, ancount: Int) throws -> String {
-        var offset = 12
-        // Skip question section QNAME (variable-length label sequence)
-        while offset < length {
-            let b = Int(buffer[offset])
-            if b == 0 { offset += 1; break }
-            if (b & 0xC0) == 0xC0 { offset += 2; break } // compression pointer
-            offset += 1 + b
+    private static func parseFirstARecord(from buf: [UInt8], length: Int, ancount: Int) throws -> String {
+        var off = 12
+        // Skip question QNAME
+        while off < length {
+            let b = Int(buf[off])
+            if b == 0          { off += 1; break }
+            if (b & 0xC0) == 0xC0 { off += 2; break }
+            off += 1 + b
         }
-        offset += 4 // skip QTYPE (2) + QCLASS (2)
+        off += 4   // QTYPE + QCLASS
 
-        // Parse each answer record looking for TYPE=A
-        for _ in 0..<ancount {
-            guard offset < length else { break }
-            // Skip NAME field (pointer or labels)
-            if (Int(buffer[offset]) & 0xC0) == 0xC0 {
-                offset += 2
-            } else {
-                while offset < length {
-                    let b = Int(buffer[offset])
-                    if b == 0 { offset += 1; break }
-                    offset += 1 + b
+        for _ in 0 ..< ancount {
+            guard off < length else { break }
+            if (Int(buf[off]) & 0xC0) == 0xC0 { off += 2 }
+            else {
+                while off < length {
+                    let b = Int(buf[off])
+                    if b == 0 { off += 1; break }
+                    off += 1 + b
                 }
             }
-            guard offset + 10 <= length else { break }
-            let rrType = (UInt16(buffer[offset]) << 8) | UInt16(buffer[offset + 1])
-            let rdlength = Int((UInt16(buffer[offset + 8]) << 8) | UInt16(buffer[offset + 9]))
-            offset += 10 // skip TYPE(2) + CLASS(2) + TTL(4) + RDLENGTH(2)
-
-            if rrType == 0x0001 && rdlength == 4 && offset + 4 <= length {
-                // TYPE=A, RDLENGTH=4: rdata is a 4-byte IPv4 address
-                let ip = "\(buffer[offset]).\(buffer[offset+1]).\(buffer[offset+2]).\(buffer[offset+3])"
-                return ip
+            guard off + 10 <= length else { break }
+            let rrType   = (UInt16(buf[off]) << 8) | UInt16(buf[off + 1])
+            let rdlength = Int((UInt16(buf[off + 8]) << 8) | UInt16(buf[off + 9]))
+            off += 10
+            if rrType == 0x0001 && rdlength == 4 && off + 4 <= length {
+                return "\(buf[off]).\(buf[off+1]).\(buf[off+2]).\(buf[off+3])"
             }
-            offset += rdlength
+            off += rdlength
         }
         throw SubscriptionFetcherError.noARecord
     }
 
-    // MARK: - Private: Helpers
-
-    private static func extractHeaders(_ response: HTTPURLResponse) -> [String: String] {
-        var headers: [String: String] = [:]
-        for (key, value) in response.allHeaderFields {
-            if let k = key as? String, let v = value as? String {
-                headers[k.lowercased()] = v
-            }
-        }
-        return headers
-    }
+    // MARK: - Helper
 
     private static func isIPAddress(_ host: String) -> Bool {
-        var addr = in_addr()
-        var addr6 = in6_addr()
-        return inet_pton(AF_INET, host, &addr) == 1 || inet_pton(AF_INET6, host, &addr6) == 1
+        var a4 = in_addr(); var a6 = in6_addr()
+        return inet_pton(AF_INET, host, &a4) == 1 || inet_pton(AF_INET6, host, &a6) == 1
     }
 }
