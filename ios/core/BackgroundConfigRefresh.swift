@@ -132,6 +132,14 @@ struct BackgroundConfigRefresh {
             )
         }
 
+        // ── Domain verification ───────────────────────────────────────────────
+        let hostname    = parsedURL.host ?? ""
+        let domainSha   = sha256Hex(hostname)
+        let verified    = await verifyDomain(sha256: domainSha)
+        if !verified {
+            NSLog("[CONFIG_LOAD] 方式=DOMAIN_UNVERIFIED, 域名SHA256=%@, 加速备用已禁用", domainSha)
+        }
+
         // ── Try primary URL ───────────────────────────────────────────────────
         do {
             let result = try await SubscriptionFetcher.fetch(url: parsedURL, userAgent: userAgent)
@@ -161,8 +169,20 @@ struct BackgroundConfigRefresh {
                 durationMs: durationMs
             )
         } catch {
-            // Network-level failure — try accelerated URL if configured
+            // Network-level failure — try accelerated URL only for verified domains
             let primaryError = error.localizedDescription
+
+            if !verified {
+                let durationMs = Int64(Date().timeIntervalSince(start) * 1000)
+                NSLog("[CONFIG_LOAD] 方式=ACCELERATOR_SKIPPED, 原因=域名未验证, 主地址原因=%@", primaryError)
+                return ConfigRefreshResult(
+                    status: "failed",
+                    subscriptionUpload: 0, subscriptionDownload: 0,
+                    subscriptionTotal: 0, subscriptionExpire: 0,
+                    error: primaryError,
+                    timestamp: isoStart, durationMs: durationMs
+                )
+            }
 
             guard let accBase = accelerateUrl, !accBase.isEmpty,
                   let accURL  = buildAcceleratedURL(from: parsedURL, accelerateBase: accBase) else {
@@ -218,6 +238,28 @@ struct BackgroundConfigRefresh {
                     timestamp: isoStart, durationMs: durationMs
                 )
             }
+        }
+    }
+
+    // MARK: - Domain verification
+
+    private static let knownDomainSha256 = "183a5526e76751b07cd57236bc8f253d5424e02a3fc7da7c30f80919e975125a"
+    private static let verifiedListUrl   = "https://www.sing-box.net/verified_subscriptions_sha256.txt"
+
+    /// Returns true if the domain's SHA256 matches the local known hash or the remote whitelist.
+    private static func verifyDomain(sha256: String) async -> Bool {
+        if sha256 == knownDomainSha256 { return true }
+        guard let url = URL(string: verifiedListUrl) else { return false }
+        do {
+            let request = URLRequest(url: url, timeoutInterval: 10)
+            let (data, _) = try await URLSession.shared.data(for: request)
+            let text   = String(data: data, encoding: .utf8) ?? ""
+            let hashes = text.components(separatedBy: "\n")
+                             .map { $0.trimmingCharacters(in: .whitespaces) }
+                             .filter { !$0.isEmpty }
+            return hashes.contains(sha256)
+        } catch {
+            return false
         }
     }
 

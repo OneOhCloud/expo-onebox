@@ -126,6 +126,29 @@ class BackgroundConfigWorker(
     }
 }
 
+// MARK: - Domain verification
+
+private const val KNOWN_DOMAIN_SHA256 = "183a5526e76751b07cd57236bc8f253d5424e02a3fc7da7c30f80919e975125a"
+private const val VERIFIED_LIST_URL   = "https://www.sing-box.net/verified_subscriptions_sha256.txt"
+
+/**
+ * Returns true if [sha256] matches the local known hash or the remote whitelist.
+ */
+private suspend fun verifyDomain(sha256: String): Boolean {
+    if (sha256 == KNOWN_DOMAIN_SHA256) return true
+    return try {
+        val conn = java.net.URL(VERIFIED_LIST_URL).openConnection() as java.net.HttpURLConnection
+        conn.connectTimeout = 10_000
+        conn.readTimeout    = 10_000
+        if (conn.responseCode !in 200..299) return false
+        val text   = conn.inputStream.bufferedReader().readText()
+        val hashes = text.lines().map { it.trim() }.filter { it.isNotEmpty() }
+        hashes.contains(sha256)
+    } catch (_: Exception) {
+        false
+    }
+}
+
 // MARK: - SHA256 + accelerated URL helpers
 
 private fun sha256Hex(input: String): String {
@@ -161,6 +184,14 @@ internal suspend fun executeRefreshWith(
     val start     = System.currentTimeMillis()
     val timestamp = Instant.now().toString()
 
+    // ── Domain verification ───────────────────────────────────────────────────
+    val host      = android.net.Uri.parse(url).host ?: ""
+    val domainSha = sha256Hex(host)
+    val verified  = verifyDomain(domainSha)
+    if (!verified) {
+        Log.w(TAG, "[CONFIG_LOAD] 方式=DOMAIN_UNVERIFIED, 域名SHA256=$domainSha, 加速备用已禁用")
+    }
+
     // ── Try primary URL ───────────────────────────────────────────────────────
     try {
         val fetchResult = fetchSubscription(url, userAgent)
@@ -193,7 +224,18 @@ internal suspend fun executeRefreshWith(
         val primaryError = primaryEx.message ?: "Unknown error"
         Log.w(TAG, "[CONFIG_LOAD] Primary failed: $primaryError")
 
-        // ── Try accelerated URL ───────────────────────────────────────────────
+        // ── Try accelerated URL (verified domains only) ───────────────────────
+        if (!verified) {
+            val durationMs = System.currentTimeMillis() - start
+            Log.w(TAG, "[CONFIG_LOAD] 方式=ACCELERATOR_SKIPPED, 原因=域名未验证, 主地址原因=$primaryError")
+            return ConfigRefreshResult(
+                status    = "failed",
+                error     = primaryError,
+                timestamp = timestamp,
+                durationMs = durationMs,
+            )
+        }
+
         if (accelerateUrl.isNullOrBlank()) {
             val durationMs = System.currentTimeMillis() - start
             Log.w(TAG, "[CONFIG_LOAD] 方式=ACCELERATOR_UNAVAILABLE (未配置)")
