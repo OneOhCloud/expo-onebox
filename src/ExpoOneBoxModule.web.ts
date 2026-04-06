@@ -167,13 +167,13 @@ class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
     return { statusCode: 200, headers: {} as Record<string, string>, body: '' };
   }
 
-  async registerBackgroundConfigRefresh(_url: string, _userAgent: string, _intervalSeconds: number): Promise<void> {
+  async registerBackgroundConfigRefresh(_url: string, _userAgent: string, _intervalSeconds: number, _accelerateUrl: string | null): Promise<void> {
     console.log('[Web Mock] registerBackgroundConfigRefresh');
   }
 
   async unregisterBackgroundConfigRefresh(): Promise<void> {}
 
-  async executeConfigRefreshNow(_url: string, _userAgent: string) {
+  async executeConfigRefreshNow(_url: string, _userAgent: string, _accelerateUrl: string | null) {
     return {
       status: 'skipped' as const,
       subscriptionUpload: 0,

@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import BackgroundTasks
 
@@ -41,6 +42,7 @@ struct BackgroundConfigRefresh {
     private static let kConfigUrl       = "bg_config_url"
     private static let kUserAgent       = "bg_user_agent"
     private static let kIntervalSeconds = "bg_interval_seconds"
+    private static let kAccelerateUrl   = "bg_accelerate_url"
     private static let kLastResultJSON  = "bg_last_result_json"
     private static let kIsRegistered    = "bg_task_registered"
 
@@ -56,10 +58,11 @@ struct BackgroundConfigRefresh {
                 return
             }
             let handle = Task {
-                let defaults = UserDefaults(suiteName: appGroupID)
-                let url      = defaults?.string(forKey: kConfigUrl) ?? ""
-                let ua       = defaults?.string(forKey: kUserAgent) ?? ""
-                let result   = await executeRefreshWith(url: url, userAgent: ua)
+                let defaults     = UserDefaults(suiteName: appGroupID)
+                let url          = defaults?.string(forKey: kConfigUrl) ?? ""
+                let ua           = defaults?.string(forKey: kUserAgent) ?? ""
+                let accelerateUrl = defaults?.string(forKey: kAccelerateUrl)
+                let result       = await executeRefreshWith(url: url, accelerateUrl: accelerateUrl, userAgent: ua)
                 storeResult(result)
                 scheduleNextRefresh()
                 refreshTask.setTaskCompleted(success: result.status == "success")
@@ -98,18 +101,25 @@ struct BackgroundConfigRefresh {
 
     // MARK: - Persist configuration for native worker
 
-    static func saveConfig(url: String, userAgent: String, intervalSeconds: Int) {
+    static func saveConfig(url: String, userAgent: String, intervalSeconds: Int, accelerateUrl: String?) {
         guard let defaults = UserDefaults(suiteName: appGroupID) else { return }
         defaults.set(url, forKey: kConfigUrl)
         defaults.set(userAgent, forKey: kUserAgent)
         defaults.set(intervalSeconds, forKey: kIntervalSeconds)
         defaults.set(true, forKey: kIsRegistered)
+        if let acc = accelerateUrl, !acc.isEmpty {
+            defaults.set(acc, forKey: kAccelerateUrl)
+        } else {
+            defaults.removeObject(forKey: kAccelerateUrl)
+        }
     }
 
     // MARK: - Execute refresh (usable from both background task and foreground JS call)
 
-    static func executeRefreshWith(url: String, userAgent: String) async -> ConfigRefreshResult {
-        let start = Date()
+    /// Primary → accelerated fallback.
+    /// HTTP errors (non-2xx) do NOT trigger fallback — only network-level failures do.
+    static func executeRefreshWith(url: String, accelerateUrl: String?, userAgent: String) async -> ConfigRefreshResult {
+        let start    = Date()
         let isoStart = ISO8601DateFormatter().string(from: start)
 
         guard !url.isEmpty, let parsedURL = URL(string: url) else {
@@ -122,11 +132,13 @@ struct BackgroundConfigRefresh {
             )
         }
 
+        // ── Try primary URL ───────────────────────────────────────────────────
         do {
             let result = try await SubscriptionFetcher.fetch(url: parsedURL, userAgent: userAgent)
             let durationMs = Int64(Date().timeIntervalSince(start) * 1000)
 
             guard result.statusCode >= 200 && result.statusCode < 300 else {
+                // HTTP error — do not fall back
                 return ConfigRefreshResult(
                     status: "failed",
                     subscriptionUpload: 0, subscriptionDownload: 0,
@@ -136,8 +148,8 @@ struct BackgroundConfigRefresh {
                 )
             }
 
+            NSLog("[CONFIG_LOAD] 方式=PRIMARY, URL=%@", url)
             let info = parseSubscriptionUserinfo(result.headers["subscription-userinfo"])
-
             return ConfigRefreshResult(
                 status: "success",
                 content: result.body,
@@ -149,15 +161,80 @@ struct BackgroundConfigRefresh {
                 durationMs: durationMs
             )
         } catch {
-            let durationMs = Int64(Date().timeIntervalSince(start) * 1000)
-            return ConfigRefreshResult(
-                status: "failed",
-                subscriptionUpload: 0, subscriptionDownload: 0,
-                subscriptionTotal: 0, subscriptionExpire: 0,
-                error: error.localizedDescription,
-                timestamp: isoStart, durationMs: durationMs
-            )
+            // Network-level failure — try accelerated URL if configured
+            let primaryError = error.localizedDescription
+
+            guard let accBase = accelerateUrl, !accBase.isEmpty,
+                  let accURL  = buildAcceleratedURL(from: parsedURL, accelerateBase: accBase) else {
+                let durationMs = Int64(Date().timeIntervalSince(start) * 1000)
+                NSLog("[CONFIG_LOAD] 方式=ACCELERATOR_UNAVAILABLE, 原因=未配置或构建失败")
+                return ConfigRefreshResult(
+                    status: "failed",
+                    subscriptionUpload: 0, subscriptionDownload: 0,
+                    subscriptionTotal: 0, subscriptionExpire: 0,
+                    error: primaryError,
+                    timestamp: isoStart, durationMs: durationMs
+                )
+            }
+
+            NSLog("[CONFIG_LOAD] 方式=FALLBACK_ACCELERATOR, 原因=%@, 加速URL=%@", primaryError, accURL.absoluteString)
+
+            // ── Try accelerated URL ───────────────────────────────────────────
+            do {
+                let accResult  = try await SubscriptionFetcher.fetch(url: accURL, userAgent: userAgent)
+                let durationMs = Int64(Date().timeIntervalSince(start) * 1000)
+
+                guard accResult.statusCode >= 200 && accResult.statusCode < 300 else {
+                    NSLog("[CONFIG_LOAD] 方式=BOTH_FAILED, 主地址原因=%@, 加速地址原因=HTTP %d", primaryError, accResult.statusCode)
+                    return ConfigRefreshResult(
+                        status: "failed",
+                        subscriptionUpload: 0, subscriptionDownload: 0,
+                        subscriptionTotal: 0, subscriptionExpire: 0,
+                        error: "primary=\(primaryError) accelerated=HTTP \(accResult.statusCode)",
+                        timestamp: isoStart, durationMs: durationMs
+                    )
+                }
+
+                let info = parseSubscriptionUserinfo(accResult.headers["subscription-userinfo"])
+                return ConfigRefreshResult(
+                    status: "success",
+                    content: accResult.body,
+                    subscriptionUpload: info.upload,
+                    subscriptionDownload: info.download,
+                    subscriptionTotal: info.total,
+                    subscriptionExpire: info.expire,
+                    timestamp: isoStart,
+                    durationMs: durationMs
+                )
+            } catch {
+                let durationMs = Int64(Date().timeIntervalSince(start) * 1000)
+                let accError   = error.localizedDescription
+                NSLog("[CONFIG_LOAD] 方式=BOTH_FAILED, 主地址原因=%@, 加速地址原因=%@", primaryError, accError)
+                return ConfigRefreshResult(
+                    status: "failed",
+                    subscriptionUpload: 0, subscriptionDownload: 0,
+                    subscriptionTotal: 0, subscriptionExpire: 0,
+                    error: "primary=\(primaryError) accelerated=\(accError)",
+                    timestamp: isoStart, durationMs: durationMs
+                )
+            }
         }
+    }
+
+    // MARK: - SHA256 + accelerated URL helpers
+
+    private static func sha256Hex(_ string: String) -> String {
+        let digest = SHA256.hash(data: Data(string.utf8))
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Build the accelerated variant: <accelerateBase>/<sha256(host)><path+query>
+    private static func buildAcceleratedURL(from original: URL, accelerateBase: String) -> URL? {
+        guard let host = original.host else { return nil }
+        let hashHex     = sha256Hex(host)
+        let path        = original.path.isEmpty ? "/" : original.path
+        let queryPart   = original.query.map { "?" + $0 } ?? ""
+        return URL(string: "\(accelerateBase)/\(hashHex)\(path)\(queryPart)")
     }
 
     // MARK: - Persistent result storage

@@ -111,58 +111,139 @@ class BackgroundConfigWorker(
 
     override suspend fun doWork(): Result {
         val prefs = applicationContext.getSharedPreferences(BG_PREFS_NAME, Context.MODE_PRIVATE)
-        val url = prefs.getString("config_url", null)
-        val userAgent = prefs.getString("user_agent", "") ?: ""
+        val url          = prefs.getString("config_url", null)
+        val userAgent    = prefs.getString("user_agent", "") ?: ""
+        val accelerateUrl = prefs.getString("accelerate_url", null)
 
         if (url.isNullOrEmpty()) {
             Log.d(TAG, "No config URL stored, skipping")
             return Result.success()
         }
 
-        val start = System.currentTimeMillis()
-        val timestamp = Instant.now().toString()
+        val result = executeRefreshWith(url, accelerateUrl, userAgent)
+        storeResult(applicationContext, result)
+        return if (result.status == "success") Result.success() else Result.retry()
+    }
+}
+
+// MARK: - SHA256 + accelerated URL helpers
+
+private fun sha256Hex(input: String): String {
+    val digest = java.security.MessageDigest.getInstance("SHA-256")
+    return digest.digest(input.toByteArray(Charsets.UTF_8))
+        .joinToString("") { "%02x".format(it) }
+}
+
+/** Build the accelerated variant: <accelerateBase>/<sha256(host)><path+query> */
+private fun buildAcceleratedUrl(originalUrl: String, accelerateBase: String): String {
+    val uri = android.net.Uri.parse(originalUrl)
+    val host = uri.host ?: return originalUrl
+    val hashHex = sha256Hex(host)
+    val pathAndQuery = buildString {
+        append(uri.encodedPath ?: "/")
+        uri.encodedQuery?.let { append("?$it") }
+    }
+    return "$accelerateBase/$hashHex$pathAndQuery"
+}
+
+// MARK: - Shared refresh executor (foreground + background)
+
+/**
+ * Fetch [url] and return a [ConfigRefreshResult].
+ * On network-level failure (exception), retries via [accelerateUrl] if provided.
+ * HTTP errors (non-2xx) do NOT trigger fallback.
+ */
+internal suspend fun executeRefreshWith(
+    url: String,
+    accelerateUrl: String?,
+    userAgent: String,
+): ConfigRefreshResult {
+    val start     = System.currentTimeMillis()
+    val timestamp = Instant.now().toString()
+
+    // ── Try primary URL ───────────────────────────────────────────────────────
+    try {
+        val fetchResult = fetchSubscription(url, userAgent)
+        val durationMs  = System.currentTimeMillis() - start
+
+        if (fetchResult.statusCode < 200 || fetchResult.statusCode >= 300) {
+            // HTTP error — do not fall back
+            Log.w(TAG, "HTTP error ${fetchResult.statusCode} on primary, no fallback")
+            return ConfigRefreshResult(
+                status    = "failed",
+                error     = "HTTP ${fetchResult.statusCode}",
+                timestamp = timestamp,
+                durationMs = durationMs,
+            )
+        }
+
+        val info = parseSubscriptionUserinfo(fetchResult.headers["subscription-userinfo"])
+        Log.i(TAG, "[CONFIG_LOAD] 方式=PRIMARY, URL=$url")
+        return ConfigRefreshResult(
+            status             = "success",
+            content            = fetchResult.body,
+            subscriptionUpload   = info.upload,
+            subscriptionDownload = info.download,
+            subscriptionTotal    = info.total,
+            subscriptionExpire   = info.expire,
+            timestamp          = timestamp,
+            durationMs         = durationMs,
+        )
+    } catch (primaryEx: Exception) {
+        val primaryError = primaryEx.message ?: "Unknown error"
+        Log.w(TAG, "[CONFIG_LOAD] Primary failed: $primaryError")
+
+        // ── Try accelerated URL ───────────────────────────────────────────────
+        if (accelerateUrl.isNullOrBlank()) {
+            val durationMs = System.currentTimeMillis() - start
+            Log.w(TAG, "[CONFIG_LOAD] 方式=ACCELERATOR_UNAVAILABLE (未配置)")
+            return ConfigRefreshResult(
+                status    = "failed",
+                error     = primaryError,
+                timestamp = timestamp,
+                durationMs = durationMs,
+            )
+        }
+
+        val accUrl = buildAcceleratedUrl(url, accelerateUrl)
+        Log.i(TAG, "[CONFIG_LOAD] 方式=FALLBACK_ACCELERATOR, 原因=$primaryError, 加速URL=$accUrl")
 
         return try {
-            val fetchResult = fetchSubscription(url, userAgent)
-            val durationMs = System.currentTimeMillis() - start
+            val fetchResult = fetchSubscription(accUrl, userAgent)
+            val durationMs  = System.currentTimeMillis() - start
 
             if (fetchResult.statusCode < 200 || fetchResult.statusCode >= 300) {
-                val result = ConfigRefreshResult(
-                    status = "failed",
-                    error = "HTTP ${fetchResult.statusCode}",
+                val accError = "HTTP ${fetchResult.statusCode}"
+                Log.e(TAG, "[CONFIG_LOAD] 方式=BOTH_FAILED, 主地址=$primaryError, 加速地址=$accError")
+                ConfigRefreshResult(
+                    status    = "failed",
+                    error     = "primary=$primaryError accelerated=$accError",
                     timestamp = timestamp,
                     durationMs = durationMs,
                 )
-                storeResult(applicationContext, result)
-                Log.w(TAG, "Fetch failed with HTTP ${fetchResult.statusCode}")
-                return Result.retry()
+            } else {
+                val info = parseSubscriptionUserinfo(fetchResult.headers["subscription-userinfo"])
+                ConfigRefreshResult(
+                    status             = "success",
+                    content            = fetchResult.body,
+                    subscriptionUpload   = info.upload,
+                    subscriptionDownload = info.download,
+                    subscriptionTotal    = info.total,
+                    subscriptionExpire   = info.expire,
+                    timestamp          = timestamp,
+                    durationMs         = durationMs,
+                )
             }
-
-            val info = parseSubscriptionUserinfo(fetchResult.headers["subscription-userinfo"])
-            val result = ConfigRefreshResult(
-                status = "success",
-                content = fetchResult.body,
-                subscriptionUpload = info.upload,
-                subscriptionDownload = info.download,
-                subscriptionTotal = info.total,
-                subscriptionExpire = info.expire,
-                timestamp = timestamp,
-                durationMs = durationMs,
-            )
-            storeResult(applicationContext, result)
-            Log.i(TAG, "Config refresh success in ${durationMs}ms")
-            Result.success()
-        } catch (e: Exception) {
+        } catch (accEx: Exception) {
             val durationMs = System.currentTimeMillis() - start
-            val result = ConfigRefreshResult(
-                status = "failed",
-                error = e.message ?: "Unknown error",
+            val accError   = accEx.message ?: "Unknown error"
+            Log.e(TAG, "[CONFIG_LOAD] 方式=BOTH_FAILED, 主地址=$primaryError, 加速地址=$accError")
+            ConfigRefreshResult(
+                status    = "failed",
+                error     = "primary=$primaryError accelerated=$accError",
                 timestamp = timestamp,
                 durationMs = durationMs,
             )
-            storeResult(applicationContext, result)
-            Log.w(TAG, "Config refresh error", e)
-            Result.retry()
         }
     }
 }

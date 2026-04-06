@@ -38,13 +38,13 @@ declare class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
   fetchSubscription(url: string, userAgent: string): Promise<SubscriptionFetchResult>;
 
   /** Register (or update) the native periodic background config refresh. */
-  registerBackgroundConfigRefresh(url: string, userAgent: string, intervalSeconds: number): Promise<void>;
+  registerBackgroundConfigRefresh(url: string, userAgent: string, intervalSeconds: number, accelerateUrl: string | null): Promise<void>;
 
   /** Cancel the scheduled background config refresh. */
   unregisterBackgroundConfigRefresh(): Promise<void>;
 
   /** Execute a config refresh immediately (returns result synchronously to JS). */
-  executeConfigRefreshNow(url: string, userAgent: string): Promise<ConfigRefreshResult>;
+  executeConfigRefreshNow(url: string, userAgent: string, accelerateUrl: string | null): Promise<ConfigRefreshResult>;
 
   /**
    * Return and clear the last result stored by the native background task.

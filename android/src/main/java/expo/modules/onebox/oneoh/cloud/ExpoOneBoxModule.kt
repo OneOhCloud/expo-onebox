@@ -478,15 +478,20 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
         // ─── Native Background Config Refresh ────────────────────────────────────
 
         // Register (or update) the WorkManager periodic task.
-        AsyncFunction("registerBackgroundConfigRefresh") { url: String, userAgent: String, intervalSeconds: Int ->
+        AsyncFunction("registerBackgroundConfigRefresh") { url: String, userAgent: String, intervalSeconds: Int, accelerateUrl: String? ->
             context.getSharedPreferences(BG_PREFS_NAME, android.content.Context.MODE_PRIVATE)
                 .edit()
                 .putString("config_url", url)
                 .putString("user_agent", userAgent)
                 .putLong("interval_seconds", intervalSeconds.toLong())
+                .also { ed ->
+                    val acc = accelerateUrl?.takeIf { it.isNotBlank() }
+                    if (acc != null) ed.putString("accelerate_url", acc)
+                    else ed.remove("accelerate_url")
+                }
                 .apply()
             BackgroundConfigWorker.schedule(context, intervalSeconds.toLong())
-            Log.i(TAG, "Background config refresh registered (interval=${intervalSeconds}s)")
+            Log.i(TAG, "Background config refresh registered (interval=${intervalSeconds}s, accelerate=${accelerateUrl != null})")
         }
 
         // Cancel the periodic WorkManager task.
@@ -495,41 +500,11 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
         }
 
         // Execute config refresh immediately (foreground / dev screen).
-        AsyncFunction("executeConfigRefreshNow") { url: String, userAgent: String ->
-            val start = System.currentTimeMillis()
-            val timestamp = java.time.Instant.now().toString()
-            try {
-                val fetchResult = runBlocking { fetchSubscription(url, userAgent) }
-                val durationMs = System.currentTimeMillis() - start
-                if (fetchResult.statusCode < 200 || fetchResult.statusCode >= 300) {
-                    val result = expo.modules.onebox.oneoh.cloud.helper.ConfigRefreshResult(
-                        status = "failed", error = "HTTP ${fetchResult.statusCode}",
-                        timestamp = timestamp, durationMs = durationMs,
-                    )
-                    BackgroundConfigWorker.storeResult(context, result)
-                    return@AsyncFunction result.toMap()
-                }
-                val info = parseSubscriptionUserinfo(fetchResult.headers["subscription-userinfo"])
-                val result = expo.modules.onebox.oneoh.cloud.helper.ConfigRefreshResult(
-                    status = "success",
-                    content = fetchResult.body,
-                    subscriptionUpload = info.upload,
-                    subscriptionDownload = info.download,
-                    subscriptionTotal = info.total,
-                    subscriptionExpire = info.expire,
-                    timestamp = timestamp,
-                    durationMs = durationMs,
-                )
-                BackgroundConfigWorker.storeResult(context, result)
-                return@AsyncFunction result.toMap()
-            } catch (e: Exception) {
-                val result = expo.modules.onebox.oneoh.cloud.helper.ConfigRefreshResult(
-                    status = "failed", error = e.message ?: "Unknown error",
-                    timestamp = timestamp, durationMs = System.currentTimeMillis() - start,
-                )
-                BackgroundConfigWorker.storeResult(context, result)
-                return@AsyncFunction result.toMap()
-            }
+        AsyncFunction("executeConfigRefreshNow") { url: String, userAgent: String, accelerateUrl: String? ->
+            val acc    = accelerateUrl?.takeIf { it.isNotBlank() }
+            val result = runBlocking { executeRefreshWith(url, acc, userAgent) }
+            BackgroundConfigWorker.storeResult(context, result)
+            result.toMap()
         }
 
         // Return and clear the last result stored by the background worker.

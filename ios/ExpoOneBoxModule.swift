@@ -206,10 +206,10 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
         // Register (or update) the native background config refresh task.
         // Persists URL, userAgent, and interval to AppGroup UserDefaults, then
         // submits a BGAppRefreshTaskRequest so iOS wakes the app periodically.
-        AsyncFunction("registerBackgroundConfigRefresh") { (url: String, userAgent: String, intervalSeconds: Int) async in
-            BackgroundConfigRefresh.saveConfig(url: url, userAgent: userAgent, intervalSeconds: intervalSeconds)
+        AsyncFunction("registerBackgroundConfigRefresh") { (url: String, userAgent: String, intervalSeconds: Int, accelerateUrl: String?) async in
+            BackgroundConfigRefresh.saveConfig(url: url, userAgent: userAgent, intervalSeconds: intervalSeconds, accelerateUrl: accelerateUrl)
             BackgroundConfigRefresh.scheduleNextRefresh()
-            NSLog("[ExpoOneBox] Background config refresh registered (interval=\(intervalSeconds)s)")
+            NSLog("[ExpoOneBox] Background config refresh registered (interval=\(intervalSeconds)s, accelerate=\(accelerateUrl != nil))")
         }
 
         // Cancel the scheduled background refresh and clear the registered flag.
@@ -218,9 +218,9 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
         }
 
         // Execute a config refresh immediately (used from foreground / dev screen).
-        // Uses the same DNS-resolved fetcher as the background task.
-        AsyncFunction("executeConfigRefreshNow") { (url: String, userAgent: String) async -> [String: Any] in
-            let result = await BackgroundConfigRefresh.executeRefreshWith(url: url, userAgent: userAgent)
+        // Uses the same DNS-resolved fetcher as the background task, with accelerator fallback.
+        AsyncFunction("executeConfigRefreshNow") { (url: String, userAgent: String, accelerateUrl: String?) async -> [String: Any] in
+            let result = await BackgroundConfigRefresh.executeRefreshWith(url: url, accelerateUrl: accelerateUrl, userAgent: userAgent)
             BackgroundConfigRefresh.storeResult(result)
             return result.toDictionary()
         }

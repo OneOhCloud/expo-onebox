@@ -131,6 +131,7 @@ internal suspend fun fetchSubscription(url: String, userAgent: String): Subscrip
         .hostnameVerifier(hostnameVerifier)
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
+        .callTimeout(60, TimeUnit.SECONDS)
         .build()
 
     val request = Request.Builder()
@@ -262,6 +263,7 @@ private fun fetchDirect(url: String, userAgent: String): SubscriptionFetchResult
     val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
+        .callTimeout(60, TimeUnit.SECONDS)
         .build()
     val request = Request.Builder()
         .url(url)
