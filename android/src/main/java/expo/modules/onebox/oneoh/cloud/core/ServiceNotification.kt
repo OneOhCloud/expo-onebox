@@ -58,7 +58,7 @@ class ServiceNotification(
         val launchIntent = service.packageManager.getLaunchIntentForPackage(packageName)
         NotificationCompat.Builder(service, NOTIFICATION_CHANNEL).setShowWhen(false).setOngoing(true)
             .setContentTitle("oneboxm").setOnlyAlertOnce(true)
-            .setSmallIcon(R.drawable.ic_menu)
+            .setSmallIcon(R.drawable.ic_stat_vpn)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setContentIntent(
                 PendingIntent.getActivity(

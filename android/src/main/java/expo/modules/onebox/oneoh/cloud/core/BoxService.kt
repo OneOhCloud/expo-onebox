@@ -315,7 +315,7 @@ class BoxService(
             .setContentTitle(boxNotification.title)
             .setContentText(boxNotification.body)
             .setOnlyAlertOnce(true)
-            .setSmallIcon(R.drawable.ic_menu2)
+            .setSmallIcon(R.drawable.ic_stat_vpn)
             .setCategory(NotificationCompat.CATEGORY_EVENT)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setAutoCancel(true)
