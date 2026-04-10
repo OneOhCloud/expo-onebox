@@ -30,6 +30,8 @@ data class ConfigRefreshResult(
     val error: String? = null,
     val timestamp: String,
     val durationMs: Long,
+    val subscriptionUserinfoHeader: String? = null,  // 原始 subscription-userinfo 响应头
+    val method: String? = null,  // 实际使用的方法: "primary" | "accelerated" | "fallback" | "test_mode"
 ) {
     fun toMap(): Map<String, Any?> = buildMap {
         put("status", status)
@@ -41,6 +43,8 @@ data class ConfigRefreshResult(
         put("durationMs", durationMs)
         content?.let { put("content", it) }
         error?.let { put("error", it) }
+        subscriptionUserinfoHeader?.let { put("subscriptionUserinfoHeader", it) }
+        method?.let { put("method", it) }
     }
 }
 
@@ -172,9 +176,13 @@ private fun buildAcceleratedUrl(originalUrl: String, accelerateBase: String): St
 // MARK: - Shared refresh executor (foreground + background)
 
 /**
- * Fetch [url] and return a [ConfigRefreshResult].
- * On network-level failure (exception), retries via [accelerateUrl] if provided.
+ * Fetch [url] with fallback to [accelerateUrl].
+ * Core logic (unified):
+ *   1. Try [url] (primary)
+ *   2. If fails (network exception) and domain verified → try accelerated URL
+ *   3. Return result with method info
  * HTTP errors (non-2xx) do NOT trigger fallback.
+ * Test mode: simulates primary URL unavailable to test fallback path.
  */
 internal suspend fun executeRefreshWith(
     url: String,
@@ -190,13 +198,13 @@ internal suspend fun executeRefreshWith(
     val domainSha = sha256Hex(host)
     val verified  = verifyDomain(domainSha)
     if (!verified) {
-        Log.w(TAG, "[CONFIG_LOAD] 方式=DOMAIN_UNVERIFIED, 域名SHA256=$domainSha, 加速备用已禁用")
+        Log.w(TAG, "[CONFIG_LOAD] 域名未验证: SHA256=$domainSha, 加速备用已禁用")
     }
 
-    // ── Try primary URL ───────────────────────────────────────────────────────
+    // ── Try primary URL first ────────────────────────────────────────────────
     val primaryError: String = if (testPrimaryUrlUnavailable) {
-        // Test mode: simulate primary URL unavailable
-        Log.w(TAG, "[CONFIG_LOAD] 测试模式=PRIMARY_UNAVAILABLE, 跳过主地址直接尝试加速备用")
+        // Test mode: simulate primary URL unavailable to trigger fallback path
+        Log.w(TAG, "[CONFIG_LOAD] 测试模式: 跳过主URL直接尝试加速回落")
         "TEST MODE: primary URL unavailable"
     } else {
         try {
@@ -204,18 +212,20 @@ internal suspend fun executeRefreshWith(
             val durationMs  = System.currentTimeMillis() - start
 
             if (fetchResult.statusCode < 200 || fetchResult.statusCode >= 300) {
-                // HTTP error — do not fall back
-                Log.w(TAG, "HTTP error ${fetchResult.statusCode} on primary, no fallback")
+                // HTTP error — do not fall back, return error
+                Log.w(TAG, "[CONFIG_LOAD] 主URL返回HTTP ${fetchResult.statusCode}, 不触发回落")
                 return ConfigRefreshResult(
                     status    = "failed",
                     error     = "HTTP ${fetchResult.statusCode}",
                     timestamp = timestamp,
                     durationMs = durationMs,
+                    method    = "primary",
                 )
             }
 
-            val info = parseSubscriptionUserinfo(fetchResult.headers["subscription-userinfo"])
-            Log.i(TAG, "[CONFIG_LOAD] 方式=PRIMARY, URL=$url")
+            val headerValue = fetchResult.headers["subscription-userinfo"]
+            val info = parseSubscriptionUserinfo(headerValue)
+            Log.i(TAG, "[CONFIG_LOAD] 主URL成功: 上传=${info.upload}, 下载=${info.download}, 总计=${info.total}, 过期=${info.expire}")
             return ConfigRefreshResult(
                 status             = "success",
                 content            = fetchResult.body,
@@ -225,10 +235,12 @@ internal suspend fun executeRefreshWith(
                 subscriptionExpire   = info.expire,
                 timestamp          = timestamp,
                 durationMs         = durationMs,
+                subscriptionUserinfoHeader = headerValue,
+                method             = "primary",
             )
         } catch (primaryEx: Exception) {
             val err = primaryEx.message ?: "Unknown error"
-            Log.w(TAG, "[CONFIG_LOAD] Primary failed: $err")
+            Log.w(TAG, "[CONFIG_LOAD] 主URL异常: $err, 检查回落条件")
             err
         }
     }
@@ -236,67 +248,76 @@ internal suspend fun executeRefreshWith(
     // ── Try accelerated URL (verified domains only) ───────────────────────
     // This code executes when either testPrimaryUrlUnavailable=true or primary fetch failed
     if (!verified) {
-            val durationMs = System.currentTimeMillis() - start
-            Log.w(TAG, "[CONFIG_LOAD] 方式=ACCELERATOR_SKIPPED, 原因=域名未验证, 主地址原因=$primaryError")
-            return ConfigRefreshResult(
-                status    = "failed",
-                error     = primaryError,
-                timestamp = timestamp,
-                durationMs = durationMs,
-            )
-        }
+        val durationMs = System.currentTimeMillis() - start
+        Log.w(TAG, "[CONFIG_LOAD] 回落被禁用: 域名未验证 (SHA256=$domainSha), 主URL原因: $primaryError")
+        return ConfigRefreshResult(
+            status    = "failed",
+            error     = primaryError,
+            timestamp = timestamp,
+            durationMs = durationMs,
+            method    = "primary",
+        )
+    }
 
-        if (accelerateUrl.isNullOrBlank()) {
-            val durationMs = System.currentTimeMillis() - start
-            Log.w(TAG, "[CONFIG_LOAD] 方式=ACCELERATOR_UNAVAILABLE (未配置)")
-            return ConfigRefreshResult(
-                status    = "failed",
-                error     = primaryError,
-                timestamp = timestamp,
-                durationMs = durationMs,
-            )
-        }
+    if (accelerateUrl.isNullOrBlank()) {
+        val durationMs = System.currentTimeMillis() - start
+        Log.w(TAG, "[CONFIG_LOAD] 回落被禁用: 加速URL未配置, 主URL原因: $primaryError")
+        return ConfigRefreshResult(
+            status    = "failed",
+            error     = primaryError,
+            timestamp = timestamp,
+            durationMs = durationMs,
+            method    = "primary",
+        )
+    }
 
-        val accUrl = buildAcceleratedUrl(url, accelerateUrl)
-        Log.i(TAG, "[CONFIG_LOAD] 方式=FALLBACK_ACCELERATOR, 原因=$primaryError, 加速URL=$accUrl")
+    val accUrl = buildAcceleratedUrl(url, accelerateUrl)
+    Log.i(TAG, "[CONFIG_LOAD] 主URL失败, 尝试加速回落: $accUrl, 原因: $primaryError")
 
-        return try {
-            val fetchResult = fetchSubscription(accUrl, userAgent)
-            val durationMs  = System.currentTimeMillis() - start
+    return try {
+        val fetchResult = fetchSubscription(accUrl, userAgent)
+        val durationMs  = System.currentTimeMillis() - start
 
-            if (fetchResult.statusCode < 200 || fetchResult.statusCode >= 300) {
-                val accError = "HTTP ${fetchResult.statusCode}"
-                Log.e(TAG, "[CONFIG_LOAD] 方式=BOTH_FAILED, 主地址=$primaryError, 加速地址=$accError")
-                ConfigRefreshResult(
-                    status    = "failed",
-                    error     = "primary=$primaryError accelerated=$accError",
-                    timestamp = timestamp,
-                    durationMs = durationMs,
-                )
-            } else {
-                val info = parseSubscriptionUserinfo(fetchResult.headers["subscription-userinfo"])
-                ConfigRefreshResult(
-                    status             = "success",
-                    content            = fetchResult.body,
-                    subscriptionUpload   = info.upload,
-                    subscriptionDownload = info.download,
-                    subscriptionTotal    = info.total,
-                    subscriptionExpire   = info.expire,
-                    timestamp          = timestamp,
-                    durationMs         = durationMs,
-                )
-            }
-        } catch (accEx: Exception) {
-            val durationMs = System.currentTimeMillis() - start
-            val accError   = accEx.message ?: "Unknown error"
-            Log.e(TAG, "[CONFIG_LOAD] 方式=BOTH_FAILED, 主地址=$primaryError, 加速地址=$accError")
+        if (fetchResult.statusCode < 200 || fetchResult.statusCode >= 300) {
+            val accError = "HTTP ${fetchResult.statusCode}"
+            Log.e(TAG, "[CONFIG_LOAD] 加速URL也失败: $accError (主URL: $primaryError)")
             ConfigRefreshResult(
                 status    = "failed",
                 error     = "primary=$primaryError accelerated=$accError",
                 timestamp = timestamp,
                 durationMs = durationMs,
+                method    = "fallback",
+            )
+        } else {
+            val headerValue = fetchResult.headers["subscription-userinfo"]
+            Log.i(TAG, "[CONFIG_LOAD] 加速回落成功: subscription-userinfo=$headerValue")
+            val info = parseSubscriptionUserinfo(headerValue)
+            Log.i(TAG, "[CONFIG_LOAD] 加速回落: 上传=${info.upload}, 下载=${info.download}, 总计=${info.total}, 过期=${info.expire}")
+            ConfigRefreshResult(
+                status             = "success",
+                content            = fetchResult.body,
+                subscriptionUpload   = info.upload,
+                subscriptionDownload = info.download,
+                subscriptionTotal    = info.total,
+                subscriptionExpire   = info.expire,
+                timestamp          = timestamp,
+                durationMs         = durationMs,
+                subscriptionUserinfoHeader = headerValue,
+                method             = "fallback",
             )
         }
+    } catch (accEx: Exception) {
+        val durationMs = System.currentTimeMillis() - start
+        val accError   = accEx.message ?: "Unknown error"
+        Log.e(TAG, "[CONFIG_LOAD] 加速回落也失败: $accError (主URL: $primaryError)")
+        ConfigRefreshResult(
+            status    = "failed",
+            error     = "primary=$primaryError accelerated=$accError",
+            timestamp = timestamp,
+            durationMs = durationMs,
+            method    = "fallback",
+        )
+    }
 }
 
 // MARK: - subscription-userinfo header parser

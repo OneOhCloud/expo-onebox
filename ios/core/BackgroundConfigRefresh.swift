@@ -226,7 +226,10 @@ struct BackgroundConfigRefresh {
                     )
                 }
 
-                let info = parseSubscriptionUserinfo(accResult.headers["subscription-userinfo"])
+                let headerValue = accResult.headers["subscription-userinfo"]
+                NSLog("[CONFIG_LOAD] 加速URL响应头 subscription-userinfo: %@", headerValue ?? "nil")
+                let info = parseSubscriptionUserinfo(headerValue)
+                NSLog("[CONFIG_LOAD] 方式=ACCELERATED, 上传=%lld, 下载=%lld, 总计=%lld, 过期=%lld", info.upload, info.download, info.total, info.expire)
                 return ConfigRefreshResult(
                     status: "success",
                     content: accResult.body,
