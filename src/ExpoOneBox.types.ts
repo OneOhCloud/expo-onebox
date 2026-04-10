@@ -96,8 +96,9 @@ export interface ConfigRefreshResult {
   error?: string;
   timestamp: string;
   durationMs: number;
-  subscriptionUserinfoHeader?: string;  // 原始 subscription-userinfo 响应头
-  method?: 'primary' | 'accelerated' | 'fallback' | 'test_mode';  // 实际使用的加载方式
+  subscriptionUserinfoHeader?: string;
+  method?: 'primary' | 'fallback';
+  actualUrl?: string;  // 加速回落时为构造后的完整 URL
 }
 
 export type ExpoOneBoxModuleEvents = {

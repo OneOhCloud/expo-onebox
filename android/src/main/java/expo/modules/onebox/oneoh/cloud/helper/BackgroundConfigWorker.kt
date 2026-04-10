@@ -30,8 +30,9 @@ data class ConfigRefreshResult(
     val error: String? = null,
     val timestamp: String,
     val durationMs: Long,
-    val subscriptionUserinfoHeader: String? = null,  // 原始 subscription-userinfo 响应头
-    val method: String? = null,  // 实际使用的方法: "primary" | "accelerated" | "fallback" | "test_mode"
+    val subscriptionUserinfoHeader: String? = null,
+    val method: String? = null,   // "primary" | "fallback"
+    val actualUrl: String? = null, // 实际请求的 URL（加速时为构造后的完整 URL）
 ) {
     fun toMap(): Map<String, Any?> = buildMap {
         put("status", status)
@@ -45,6 +46,7 @@ data class ConfigRefreshResult(
         error?.let { put("error", it) }
         subscriptionUserinfoHeader?.let { put("subscriptionUserinfoHeader", it) }
         method?.let { put("method", it) }
+        actualUrl?.let { put("actualUrl", it) }
     }
 }
 
@@ -287,12 +289,12 @@ internal suspend fun executeRefreshWith(
                 timestamp = timestamp,
                 durationMs = durationMs,
                 method    = "fallback",
+                actualUrl = accUrl,
             )
         } else {
             val headerValue = fetchResult.headers["subscription-userinfo"]
             Log.i(TAG, "[CONFIG_LOAD] 加速回落成功: subscription-userinfo=$headerValue")
             val info = parseSubscriptionUserinfo(headerValue)
-            Log.i(TAG, "[CONFIG_LOAD] 加速回落: 上传=${info.upload}, 下载=${info.download}, 总计=${info.total}, 过期=${info.expire}")
             ConfigRefreshResult(
                 status             = "success",
                 content            = fetchResult.body,
@@ -304,6 +306,7 @@ internal suspend fun executeRefreshWith(
                 durationMs         = durationMs,
                 subscriptionUserinfoHeader = headerValue,
                 method             = "fallback",
+                actualUrl          = accUrl,
             )
         }
     } catch (accEx: Exception) {
@@ -316,6 +319,7 @@ internal suspend fun executeRefreshWith(
             timestamp = timestamp,
             durationMs = durationMs,
             method    = "fallback",
+            actualUrl = accUrl,
         )
     }
 }

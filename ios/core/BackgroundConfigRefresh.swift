@@ -14,6 +14,9 @@ struct ConfigRefreshResult: Codable {
     var error: String?
     var timestamp: String
     var durationMs: Int64
+    var subscriptionUserinfoHeader: String?
+    var method: String?          // "primary" | "fallback"
+    var actualUrl: String?       // accelerated URL when fallback is used
 
     func toDictionary() -> [String: Any] {
         var dict: [String: Any] = [
@@ -27,6 +30,9 @@ struct ConfigRefreshResult: Codable {
         ]
         if let content { dict["content"] = content }
         if let error { dict["error"] = error }
+        if let subscriptionUserinfoHeader { dict["subscriptionUserinfoHeader"] = subscriptionUserinfoHeader }
+        if let method { dict["method"] = method }
+        if let actualUrl { dict["actualUrl"] = actualUrl }
         return dict
     }
 }
@@ -129,7 +135,8 @@ struct BackgroundConfigRefresh {
                 subscriptionUpload: 0, subscriptionDownload: 0,
                 subscriptionTotal: 0, subscriptionExpire: 0,
                 error: "No URL configured",
-                timestamp: isoStart, durationMs: 0
+                timestamp: isoStart, durationMs: 0,
+                method: "primary"
             )
         }
 
@@ -160,12 +167,14 @@ struct BackgroundConfigRefresh {
                         subscriptionUpload: 0, subscriptionDownload: 0,
                         subscriptionTotal: 0, subscriptionExpire: 0,
                         error: "HTTP \(result.statusCode)",
-                        timestamp: isoStart, durationMs: durationMs
+                        timestamp: isoStart, durationMs: durationMs,
+                        method: "primary"
                     )
                 }
 
                 NSLog("[CONFIG_LOAD] 方式=PRIMARY, URL=%@", url)
-                let info = parseSubscriptionUserinfo(result.headers["subscription-userinfo"])
+                let headerValue = result.headers["subscription-userinfo"]
+                let info = parseSubscriptionUserinfo(headerValue)
                 return ConfigRefreshResult(
                     status: "success",
                     content: result.body,
@@ -174,7 +183,9 @@ struct BackgroundConfigRefresh {
                     subscriptionTotal: info.total,
                     subscriptionExpire: info.expire,
                     timestamp: isoStart,
-                    durationMs: durationMs
+                    durationMs: durationMs,
+                    subscriptionUserinfoHeader: headerValue,
+                    method: "primary"
                 )
             } catch {
                 // Network-level failure — try accelerated URL only for verified domains
@@ -191,7 +202,8 @@ struct BackgroundConfigRefresh {
                     subscriptionUpload: 0, subscriptionDownload: 0,
                     subscriptionTotal: 0, subscriptionExpire: 0,
                     error: primaryError,
-                    timestamp: isoStart, durationMs: durationMs
+                    timestamp: isoStart, durationMs: durationMs,
+                    method: "primary"
                 )
             }
 
@@ -204,7 +216,8 @@ struct BackgroundConfigRefresh {
                     subscriptionUpload: 0, subscriptionDownload: 0,
                     subscriptionTotal: 0, subscriptionExpire: 0,
                     error: primaryError,
-                    timestamp: isoStart, durationMs: durationMs
+                    timestamp: isoStart, durationMs: durationMs,
+                    method: "primary"
                 )
             }
 
@@ -222,14 +235,15 @@ struct BackgroundConfigRefresh {
                         subscriptionUpload: 0, subscriptionDownload: 0,
                         subscriptionTotal: 0, subscriptionExpire: 0,
                         error: "primary=\(primaryError) accelerated=HTTP \(accResult.statusCode)",
-                        timestamp: isoStart, durationMs: durationMs
+                        timestamp: isoStart, durationMs: durationMs,
+                        method: "fallback",
+                        actualUrl: accURL.absoluteString
                     )
                 }
 
                 let headerValue = accResult.headers["subscription-userinfo"]
                 NSLog("[CONFIG_LOAD] 加速URL响应头 subscription-userinfo: %@", headerValue ?? "nil")
                 let info = parseSubscriptionUserinfo(headerValue)
-                NSLog("[CONFIG_LOAD] 方式=ACCELERATED, 上传=%lld, 下载=%lld, 总计=%lld, 过期=%lld", info.upload, info.download, info.total, info.expire)
                 return ConfigRefreshResult(
                     status: "success",
                     content: accResult.body,
@@ -238,7 +252,10 @@ struct BackgroundConfigRefresh {
                     subscriptionTotal: info.total,
                     subscriptionExpire: info.expire,
                     timestamp: isoStart,
-                    durationMs: durationMs
+                    durationMs: durationMs,
+                    subscriptionUserinfoHeader: headerValue,
+                    method: "fallback",
+                    actualUrl: accURL.absoluteString
                 )
             } catch {
                 let durationMs = Int64(Date().timeIntervalSince(start) * 1000)
@@ -249,7 +266,9 @@ struct BackgroundConfigRefresh {
                     subscriptionUpload: 0, subscriptionDownload: 0,
                     subscriptionTotal: 0, subscriptionExpire: 0,
                     error: "primary=\(primaryError) accelerated=\(accError)",
-                    timestamp: isoStart, durationMs: durationMs
+                    timestamp: isoStart, durationMs: durationMs,
+                    method: "fallback",
+                    actualUrl: accURL.absoluteString
                 )
             }
     }
