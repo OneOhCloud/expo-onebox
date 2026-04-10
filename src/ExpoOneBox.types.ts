@@ -97,7 +97,6 @@ export interface ConfigRefreshResult {
   timestamp: string;
   durationMs: number;
   subscriptionUserinfoHeader?: string;  // 原始 subscription-userinfo 响应头
-  actualUrl?: string;  // 原生层实际使用的完整 URL（加速时包含构建后的路径）
   method?: 'primary' | 'accelerated' | 'fallback' | 'test_mode';  // 实际使用的加载方式
 }
 
