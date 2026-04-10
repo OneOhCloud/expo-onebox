@@ -1,6 +1,6 @@
 import { NativeModule, requireNativeModule } from 'expo';
 
-import { ConfigRefreshResult, ExpoOneBoxModuleEvents, SubscriptionFetchResult } from './ExpoOneBox.types';
+import { ConfigRefreshResult, ExpoOneBoxModuleEvents, SubscriptionFetchResult, VerificationData } from './ExpoOneBox.types';
 
 declare class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
   hello(): string;
@@ -37,6 +37,9 @@ declare class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
   /** Fetch a subscription URL using DNS resolution + SNI-overriding HTTPS. */
   fetchSubscription(url: string, userAgent: string): Promise<SubscriptionFetchResult>;
 
+  /** Set verification data (known SHA256 + verified list) for domain validation during fallback. */
+  setVerificationData(data: VerificationData): Promise<void>;
+
   /** Register (or update) the native periodic background config refresh. */
   registerBackgroundConfigRefresh(url: string, userAgent: string, intervalSeconds: number, accelerateUrl: string | null): Promise<void>;
 
@@ -44,7 +47,7 @@ declare class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
   unregisterBackgroundConfigRefresh(): Promise<void>;
 
   /** Execute a config refresh immediately (returns result synchronously to JS). */
-  executeConfigRefreshNow(url: string, userAgent: string, accelerateUrl: string | null): Promise<ConfigRefreshResult>;
+  executeConfigRefreshNow(url: string, userAgent: string, accelerateUrl: string | null, testPrimaryUrlUnavailable?: boolean): Promise<ConfigRefreshResult>;
 
   /**
    * Return and clear the last result stored by the native background task.

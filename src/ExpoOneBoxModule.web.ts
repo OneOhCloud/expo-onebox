@@ -1,6 +1,6 @@
 import { NativeModule, registerWebModule } from 'expo';
 
-import { ExpoOneBoxModuleEvents, VPN_STATUS } from './ExpoOneBox.types';
+import { ExpoOneBoxModuleEvents, VerificationData, VPN_STATUS } from './ExpoOneBox.types';
 
 // 模拟代理节点数据
 const MOCK_PROXY_NODES = [
@@ -167,13 +167,20 @@ class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
     return { statusCode: 200, headers: {} as Record<string, string>, body: '' };
   }
 
+  async setVerificationData(_data: VerificationData): Promise<void> {
+    console.log('[Web Mock] setVerificationData');
+  }
+
   async registerBackgroundConfigRefresh(_url: string, _userAgent: string, _intervalSeconds: number, _accelerateUrl: string | null): Promise<void> {
     console.log('[Web Mock] registerBackgroundConfigRefresh');
   }
 
   async unregisterBackgroundConfigRefresh(): Promise<void> {}
 
-  async executeConfigRefreshNow(_url: string, _userAgent: string, _accelerateUrl: string | null) {
+  async executeConfigRefreshNow(_url: string, _userAgent: string, _accelerateUrl: string | null, _testPrimaryUrlUnavailable?: boolean) {
+    if (_testPrimaryUrlUnavailable) {
+      console.log('[Web Mock] testing primary URL unavailable, would attempt fallback');
+    }
     return {
       status: 'skipped' as const,
       subscriptionUpload: 0,

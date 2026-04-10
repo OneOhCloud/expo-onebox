@@ -81,6 +81,11 @@ export interface SubscriptionFetchResult {
   body: string;
 }
 
+export interface VerificationData {
+  knownSha256: string;
+  verifiedSha256List: string[];
+}
+
 export interface ConfigRefreshResult {
   status: 'success' | 'failed' | 'skipped';
   content?: string;
