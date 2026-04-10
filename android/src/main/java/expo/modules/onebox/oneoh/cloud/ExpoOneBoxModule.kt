@@ -501,9 +501,9 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
         }
 
         // Execute config refresh immediately (foreground / dev screen).
-        AsyncFunction("executeConfigRefreshNow") { url: String, userAgent: String, accelerateUrl: String? ->
+        AsyncFunction("executeConfigRefreshNow") { url: String, userAgent: String, accelerateUrl: String?, testPrimaryUrlUnavailable: Boolean? ->
             val acc    = accelerateUrl?.takeIf { it.isNotBlank() }
-            val result = runBlocking { executeRefreshWith(url, acc, userAgent) }
+            val result = runBlocking { executeRefreshWith(url, acc, userAgent, testPrimaryUrlUnavailable ?: false) }
             BackgroundConfigWorker.storeResult(context, result)
             result.toMap()
         }

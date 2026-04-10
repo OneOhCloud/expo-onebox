@@ -180,6 +180,7 @@ internal suspend fun executeRefreshWith(
     url: String,
     accelerateUrl: String?,
     userAgent: String,
+    testPrimaryUrlUnavailable: Boolean = false,
 ): ConfigRefreshResult {
     val start     = System.currentTimeMillis()
     val timestamp = Instant.now().toString()
@@ -193,39 +194,48 @@ internal suspend fun executeRefreshWith(
     }
 
     // ── Try primary URL ───────────────────────────────────────────────────────
-    try {
-        val fetchResult = fetchSubscription(url, userAgent)
-        val durationMs  = System.currentTimeMillis() - start
+    val primaryError: String = if (testPrimaryUrlUnavailable) {
+        // Test mode: simulate primary URL unavailable
+        Log.w(TAG, "[CONFIG_LOAD] 测试模式=PRIMARY_UNAVAILABLE, 跳过主地址直接尝试加速备用")
+        "TEST MODE: primary URL unavailable"
+    } else {
+        try {
+            val fetchResult = fetchSubscription(url, userAgent)
+            val durationMs  = System.currentTimeMillis() - start
 
-        if (fetchResult.statusCode < 200 || fetchResult.statusCode >= 300) {
-            // HTTP error — do not fall back
-            Log.w(TAG, "HTTP error ${fetchResult.statusCode} on primary, no fallback")
+            if (fetchResult.statusCode < 200 || fetchResult.statusCode >= 300) {
+                // HTTP error — do not fall back
+                Log.w(TAG, "HTTP error ${fetchResult.statusCode} on primary, no fallback")
+                return ConfigRefreshResult(
+                    status    = "failed",
+                    error     = "HTTP ${fetchResult.statusCode}",
+                    timestamp = timestamp,
+                    durationMs = durationMs,
+                )
+            }
+
+            val info = parseSubscriptionUserinfo(fetchResult.headers["subscription-userinfo"])
+            Log.i(TAG, "[CONFIG_LOAD] 方式=PRIMARY, URL=$url")
             return ConfigRefreshResult(
-                status    = "failed",
-                error     = "HTTP ${fetchResult.statusCode}",
-                timestamp = timestamp,
-                durationMs = durationMs,
+                status             = "success",
+                content            = fetchResult.body,
+                subscriptionUpload   = info.upload,
+                subscriptionDownload = info.download,
+                subscriptionTotal    = info.total,
+                subscriptionExpire   = info.expire,
+                timestamp          = timestamp,
+                durationMs         = durationMs,
             )
+        } catch (primaryEx: Exception) {
+            val err = primaryEx.message ?: "Unknown error"
+            Log.w(TAG, "[CONFIG_LOAD] Primary failed: $err")
+            err
         }
+    }
 
-        val info = parseSubscriptionUserinfo(fetchResult.headers["subscription-userinfo"])
-        Log.i(TAG, "[CONFIG_LOAD] 方式=PRIMARY, URL=$url")
-        return ConfigRefreshResult(
-            status             = "success",
-            content            = fetchResult.body,
-            subscriptionUpload   = info.upload,
-            subscriptionDownload = info.download,
-            subscriptionTotal    = info.total,
-            subscriptionExpire   = info.expire,
-            timestamp          = timestamp,
-            durationMs         = durationMs,
-        )
-    } catch (primaryEx: Exception) {
-        val primaryError = primaryEx.message ?: "Unknown error"
-        Log.w(TAG, "[CONFIG_LOAD] Primary failed: $primaryError")
-
-        // ── Try accelerated URL (verified domains only) ───────────────────────
-        if (!verified) {
+    // ── Try accelerated URL (verified domains only) ───────────────────────
+    // This code executes when either testPrimaryUrlUnavailable=true or primary fetch failed
+    if (!verified) {
             val durationMs = System.currentTimeMillis() - start
             Log.w(TAG, "[CONFIG_LOAD] 方式=ACCELERATOR_SKIPPED, 原因=域名未验证, 主地址原因=$primaryError")
             return ConfigRefreshResult(
@@ -287,7 +297,6 @@ internal suspend fun executeRefreshWith(
                 durationMs = durationMs,
             )
         }
-    }
 }
 
 // MARK: - subscription-userinfo header parser

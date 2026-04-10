@@ -118,7 +118,8 @@ struct BackgroundConfigRefresh {
 
     /// Primary → accelerated fallback.
     /// HTTP errors (non-2xx) do NOT trigger fallback — only network-level failures do.
-    static func executeRefreshWith(url: String, accelerateUrl: String?, userAgent: String) async -> ConfigRefreshResult {
+    /// testPrimaryUrlUnavailable: if true, skip primary URL and use accelerator directly (for testing)
+    static func executeRefreshWith(url: String, accelerateUrl: String?, userAgent: String, testPrimaryUrlUnavailable: Bool = false) async -> ConfigRefreshResult {
         let start    = Date()
         let isoStart = ISO8601DateFormatter().string(from: start)
 
@@ -141,38 +142,48 @@ struct BackgroundConfigRefresh {
         }
 
         // ── Try primary URL ───────────────────────────────────────────────────
-        do {
-            let result = try await SubscriptionFetcher.fetch(url: parsedURL, userAgent: userAgent)
-            let durationMs = Int64(Date().timeIntervalSince(start) * 1000)
+        var primaryError = ""
 
-            guard result.statusCode >= 200 && result.statusCode < 300 else {
-                // HTTP error — do not fall back
+        if testPrimaryUrlUnavailable {
+            // Test mode: simulate primary URL unavailable
+            primaryError = "TEST MODE: primary URL unavailable"
+            NSLog("[CONFIG_LOAD] 测试模式=PRIMARY_UNAVAILABLE, 跳过主地址直接尝试加速备用")
+        } else {
+            do {
+                let result = try await SubscriptionFetcher.fetch(url: parsedURL, userAgent: userAgent)
+                let durationMs = Int64(Date().timeIntervalSince(start) * 1000)
+
+                guard result.statusCode >= 200 && result.statusCode < 300 else {
+                    // HTTP error — do not fall back
+                    return ConfigRefreshResult(
+                        status: "failed",
+                        subscriptionUpload: 0, subscriptionDownload: 0,
+                        subscriptionTotal: 0, subscriptionExpire: 0,
+                        error: "HTTP \(result.statusCode)",
+                        timestamp: isoStart, durationMs: durationMs
+                    )
+                }
+
+                NSLog("[CONFIG_LOAD] 方式=PRIMARY, URL=%@", url)
+                let info = parseSubscriptionUserinfo(result.headers["subscription-userinfo"])
                 return ConfigRefreshResult(
-                    status: "failed",
-                    subscriptionUpload: 0, subscriptionDownload: 0,
-                    subscriptionTotal: 0, subscriptionExpire: 0,
-                    error: "HTTP \(result.statusCode)",
-                    timestamp: isoStart, durationMs: durationMs
+                    status: "success",
+                    content: result.body,
+                    subscriptionUpload: info.upload,
+                    subscriptionDownload: info.download,
+                    subscriptionTotal: info.total,
+                    subscriptionExpire: info.expire,
+                    timestamp: isoStart,
+                    durationMs: durationMs
                 )
+            } catch {
+                // Network-level failure — try accelerated URL only for verified domains
+                primaryError = error.localizedDescription
             }
+        }
 
-            NSLog("[CONFIG_LOAD] 方式=PRIMARY, URL=%@", url)
-            let info = parseSubscriptionUserinfo(result.headers["subscription-userinfo"])
-            return ConfigRefreshResult(
-                status: "success",
-                content: result.body,
-                subscriptionUpload: info.upload,
-                subscriptionDownload: info.download,
-                subscriptionTotal: info.total,
-                subscriptionExpire: info.expire,
-                timestamp: isoStart,
-                durationMs: durationMs
-            )
-        } catch {
-            // Network-level failure — try accelerated URL only for verified domains
-            let primaryError = error.localizedDescription
-
-            if !verified {
+        // ── Fallback to accelerated URL ───────────────────────────────────────
+        if !verified {
                 let durationMs = Int64(Date().timeIntervalSince(start) * 1000)
                 NSLog("[CONFIG_LOAD] 方式=ACCELERATOR_SKIPPED, 原因=域名未验证, 主地址原因=%@", primaryError)
                 return ConfigRefreshResult(
@@ -238,7 +249,6 @@ struct BackgroundConfigRefresh {
                     timestamp: isoStart, durationMs: durationMs
                 )
             }
-        }
     }
 
     // MARK: - Domain verification

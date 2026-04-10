@@ -219,8 +219,8 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
 
         // Execute a config refresh immediately (used from foreground / dev screen).
         // Uses the same DNS-resolved fetcher as the background task, with accelerator fallback.
-        AsyncFunction("executeConfigRefreshNow") { (url: String, userAgent: String, accelerateUrl: String?) async -> [String: Any] in
-            let result = await BackgroundConfigRefresh.executeRefreshWith(url: url, accelerateUrl: accelerateUrl, userAgent: userAgent)
+        AsyncFunction("executeConfigRefreshNow") { (url: String, userAgent: String, accelerateUrl: String?, testPrimaryUrlUnavailable: Bool?) async -> [String: Any] in
+            let result = await BackgroundConfigRefresh.executeRefreshWith(url: url, accelerateUrl: accelerateUrl, userAgent: userAgent, testPrimaryUrlUnavailable: testPrimaryUrlUnavailable ?? false)
             BackgroundConfigRefresh.storeResult(result)
             return result.toDictionary()
         }
