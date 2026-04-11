@@ -134,7 +134,7 @@ class BackgroundConfigWorker(
 
 // MARK: - Domain verification
 
-private const val KNOWN_DOMAIN_SHA256 = "183a5526e76751b07cd57236bc8f253d5424e02a3fc7da7c30f80919e975125a"
+private const val KNOWN_DOMAIN_SHA256 = "59fe86216c23236fb4c6ab50cd8d1e261b7cad754e3e7cab33058df5b32d12e1"
 private const val VERIFIED_LIST_URL   = "https://www.sing-box.net/verified_subscriptions_sha256.txt"
 
 /**

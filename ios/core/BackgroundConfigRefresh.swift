@@ -275,7 +275,7 @@ struct BackgroundConfigRefresh {
 
     // MARK: - Domain verification
 
-    private static let knownDomainSha256 = "183a5526e76751b07cd57236bc8f253d5424e02a3fc7da7c30f80919e975125a"
+    private static let knownDomainSha256 = "59fe86216c23236fb4c6ab50cd8d1e261b7cad754e3e7cab33058df5b32d12e1"
     private static let verifiedListUrl   = "https://www.sing-box.net/verified_subscriptions_sha256.txt"
 
     /// Returns true if the domain's SHA256 matches the local known hash or the remote whitelist.
