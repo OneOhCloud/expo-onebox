@@ -23,11 +23,11 @@ import expo.modules.onebox.oneoh.cloud.helper.BackgroundConfigWorker
 import expo.modules.onebox.oneoh.cloud.helper.BG_PREFS_NAME
 import expo.modules.onebox.oneoh.cloud.helper.Bugs
 import expo.modules.onebox.oneoh.cloud.helper.Status
-import expo.modules.onebox.oneoh.cloud.helper.fetchSubscription
+import expo.modules.onebox.oneoh.cloud.helper.fetchConfig
 import expo.modules.onebox.oneoh.cloud.helper.findBestDnsServer
 import expo.modules.onebox.oneoh.cloud.helper.getWorkingDir
 import expo.modules.onebox.oneoh.cloud.helper.executeRefreshWith
-import expo.modules.onebox.oneoh.cloud.helper.parseSubscriptionUserinfo
+import expo.modules.onebox.oneoh.cloud.helper.parseUserinfo
 import expo.modules.onebox.oneoh.cloud.helper.processConfig
 import io.nekohasekai.libbox.CommandClientHandler
 import io.nekohasekai.libbox.CommandClientOptions
@@ -464,11 +464,11 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
             return@AsyncFunction runBlocking { findBestDnsServer() }
         }
 
-        // ─── Subscription Fetching (DNS-resolved) ────────────────────────────────
+        // ─── Config Fetching (DNS-resolved) ─────────────────────────────────────
 
-        // Fetch a subscription URL using DNS resolution + OkHttp with SNI override.
+        // Fetch a config URL using DNS resolution + OkHttp with SNI override.
         AsyncFunction("fetchSubscription") { url: String, userAgent: String ->
-            val result = runBlocking { fetchSubscription(url, userAgent) }
+            val result = runBlocking { fetchConfig(url, userAgent) }
             mapOf(
                 "statusCode" to result.statusCode,
                 "headers" to result.headers,

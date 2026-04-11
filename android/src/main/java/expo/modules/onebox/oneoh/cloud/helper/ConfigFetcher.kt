@@ -22,11 +22,11 @@ import javax.net.ssl.SSLSocketFactory
 import javax.net.ssl.X509TrustManager
 import kotlin.random.Random
 
-private const val TAG = "SubscriptionFetcher"
+private const val TAG = "ConfigFetcher"
 
 // MARK: - Result
 
-data class SubscriptionFetchResult(
+data class ConfigFetchResult(
     val statusCode: Int,
     val headers: Map<String, String>,
     val body: String,
@@ -70,16 +70,16 @@ private class SNISocketFactory(
     }
 }
 
-// MARK: - fetchSubscription
+// MARK: - fetchConfig
 
 /**
- * Fetch a subscription URL using the best DNS server for hostname resolution.
+ * Fetch a config URL using the best DNS server for hostname resolution.
  * Resolves the hostname via a raw UDP DNS A-record query, then makes an HTTPS
  * request to the resolved IP with a custom SNI override so TLS cert validation
  * passes against the original hostname.
  * Falls back to a direct fetch (system DNS) if resolution fails.
  */
-internal suspend fun fetchSubscription(url: String, userAgent: String): SubscriptionFetchResult {
+internal suspend fun fetchConfig(url: String, userAgent: String): ConfigFetchResult {
     val parsedUri = android.net.Uri.parse(url)
     val originalHost = parsedUri.host ?: throw IllegalArgumentException("Malformed URL: $url")
     val scheme = parsedUri.scheme ?: "https"
@@ -148,7 +148,7 @@ internal suspend fun fetchSubscription(url: String, userAgent: String): Subscrip
             for (name in response.headers.names()) {
                 response.headers(name).firstOrNull()?.let { headers[name.lowercase()] = it }
             }
-            SubscriptionFetchResult(
+            ConfigFetchResult(
                 statusCode = response.code,
                 headers = headers,
                 body = response.body?.string() ?: "",
@@ -259,7 +259,7 @@ private fun isIPAddress(host: String): Boolean {
     } catch (_: Exception) { false }
 }
 
-private fun fetchDirect(url: String, userAgent: String): SubscriptionFetchResult {
+private fun fetchDirect(url: String, userAgent: String): ConfigFetchResult {
     val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
@@ -276,7 +276,7 @@ private fun fetchDirect(url: String, userAgent: String): SubscriptionFetchResult
         for (name in response.headers.names()) {
             response.headers(name).firstOrNull()?.let { headers[name.lowercase()] = it }
         }
-        return SubscriptionFetchResult(
+        return ConfigFetchResult(
             statusCode = response.code,
             headers = headers,
             body = response.body?.string() ?: "",

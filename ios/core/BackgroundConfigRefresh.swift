@@ -157,7 +157,7 @@ struct BackgroundConfigRefresh {
             NSLog("[CONFIG_LOAD] 测试模式=PRIMARY_UNAVAILABLE, 跳过主地址直接尝试加速备用")
         } else {
             do {
-                let result = try await SubscriptionFetcher.fetch(url: parsedURL, userAgent: userAgent)
+                let result = try await ConfigFetcher.fetch(url: parsedURL, userAgent: userAgent)
                 let durationMs = Int64(Date().timeIntervalSince(start) * 1000)
 
                 guard result.statusCode >= 200 && result.statusCode < 300 else {
@@ -174,7 +174,7 @@ struct BackgroundConfigRefresh {
 
                 NSLog("[CONFIG_LOAD] 方式=PRIMARY, URL=%@", url)
                 let headerValue = result.headers["subscription-userinfo"]
-                let info = parseSubscriptionUserinfo(headerValue)
+                let info = parseUserinfo(headerValue)
                 return ConfigRefreshResult(
                     status: "success",
                     content: result.body,
@@ -225,7 +225,7 @@ struct BackgroundConfigRefresh {
 
             // ── Try accelerated URL ───────────────────────────────────────────
             do {
-                let accResult  = try await SubscriptionFetcher.fetch(url: accURL, userAgent: userAgent)
+                let accResult  = try await ConfigFetcher.fetch(url: accURL, userAgent: userAgent)
                 let durationMs = Int64(Date().timeIntervalSince(start) * 1000)
 
                 guard accResult.statusCode >= 200 && accResult.statusCode < 300 else {
@@ -243,7 +243,7 @@ struct BackgroundConfigRefresh {
 
                 let headerValue = accResult.headers["subscription-userinfo"]
                 NSLog("[CONFIG_LOAD] 加速URL响应头 subscription-userinfo: %@", headerValue ?? "nil")
-                let info = parseSubscriptionUserinfo(headerValue)
+                let info = parseUserinfo(headerValue)
                 return ConfigRefreshResult(
                     status: "success",
                     content: accResult.body,
@@ -339,14 +339,14 @@ struct BackgroundConfigRefresh {
 
     // MARK: - subscription-userinfo header parser
 
-    private struct SubscriptionInfo {
+    private struct TrafficInfo {
         let upload: Int64
         let download: Int64
         let total: Int64
         let expire: Int64
     }
 
-    private static func parseSubscriptionUserinfo(_ header: String?) -> SubscriptionInfo {
+    private static func parseUserinfo(_ header: String?) -> TrafficInfo {
         func extract(_ key: String, from str: String) -> Int64 {
             guard let range = str.range(of: "\(key)=(\\d+)", options: .regularExpression) else { return 0 }
             let match = String(str[range])
@@ -354,7 +354,7 @@ struct BackgroundConfigRefresh {
             return Int64(value) ?? 0
         }
         let h = header ?? ""
-        return SubscriptionInfo(
+        return TrafficInfo(
             upload:   extract("upload", from: h),
             download: extract("download", from: h),
             total:    extract("total", from: h),

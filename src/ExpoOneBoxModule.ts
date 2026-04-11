@@ -1,6 +1,6 @@
 import { NativeModule, requireNativeModule } from 'expo';
 
-import { ConfigRefreshResult, ExpoOneBoxModuleEvents, SubscriptionFetchResult, VerificationData } from './ExpoOneBox.types';
+import { ConfigRefreshResult, ExpoOneBoxModuleEvents, ConfigFetchResult, VerificationData } from './ExpoOneBox.types';
 
 declare class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
   hello(): string;
@@ -34,8 +34,8 @@ declare class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
    */
   copy2CacheDbPath(sourceUri: string): Promise<boolean>;
 
-  /** Fetch a subscription URL using DNS resolution + SNI-overriding HTTPS. */
-  fetchSubscription(url: string, userAgent: string): Promise<SubscriptionFetchResult>;
+  /** Fetch a config URL using DNS resolution + SNI-overriding HTTPS. */
+  fetchSubscription(url: string, userAgent: string): Promise<ConfigFetchResult>;
 
   /** Set verification data (known SHA256 + verified list) for domain validation during fallback. */
   setVerificationData(data: VerificationData): Promise<void>;

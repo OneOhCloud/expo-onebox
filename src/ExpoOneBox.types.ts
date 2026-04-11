@@ -75,7 +75,7 @@ export type OnLoadEventPayload = {
   url: string;
 };
 
-export interface SubscriptionFetchResult {
+export interface ConfigFetchResult {
   statusCode: number;
   headers: Record<string, string>;
   body: string;

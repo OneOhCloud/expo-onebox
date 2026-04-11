@@ -183,9 +183,9 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
             }
         }
 
-        // ─── Subscription Fetching (DNS-resolved) ────────────────────────────────
+        // ─── Config Fetching (DNS-resolved) ─────────────────────────────────────
 
-        // Fetch a subscription URL using the best DNS server for resolution.
+        // Fetch a config URL using the best DNS server for resolution.
         // Resolves the hostname via a raw UDP A-record query, then makes HTTPS request
         // to the resolved IP with TLS SNI override for the original hostname.
         AsyncFunction("fetchSubscription") { (url: String, userAgent: String) async throws -> [String: Any] in
@@ -193,7 +193,7 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
                 throw NSError(domain: "ExpoOneBox", code: -1,
                               userInfo: [NSLocalizedDescriptionKey: "Malformed URL: \(url)"])
             }
-            let result = try await SubscriptionFetcher.fetch(url: parsedURL, userAgent: userAgent)
+            let result = try await ConfigFetcher.fetch(url: parsedURL, userAgent: userAgent)
             return [
                 "statusCode": result.statusCode,
                 "headers": result.headers,

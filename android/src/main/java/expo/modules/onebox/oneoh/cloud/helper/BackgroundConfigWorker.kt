@@ -210,7 +210,7 @@ internal suspend fun executeRefreshWith(
         "TEST MODE: primary URL unavailable"
     } else {
         try {
-            val fetchResult = fetchSubscription(url, userAgent)
+            val fetchResult = fetchConfig(url, userAgent)
             val durationMs  = System.currentTimeMillis() - start
 
             if (fetchResult.statusCode < 200 || fetchResult.statusCode >= 300) {
@@ -226,7 +226,7 @@ internal suspend fun executeRefreshWith(
             }
 
             val headerValue = fetchResult.headers["subscription-userinfo"]
-            val info = parseSubscriptionUserinfo(headerValue)
+            val info = parseUserinfo(headerValue)
             Log.i(TAG, "[CONFIG_LOAD] 主URL成功: 上传=${info.upload}, 下载=${info.download}, 总计=${info.total}, 过期=${info.expire}")
             return ConfigRefreshResult(
                 status             = "success",
@@ -277,7 +277,7 @@ internal suspend fun executeRefreshWith(
     Log.i(TAG, "[CONFIG_LOAD] 主URL失败, 尝试加速回落: $accUrl, 原因: $primaryError")
 
     return try {
-        val fetchResult = fetchSubscription(accUrl, userAgent)
+        val fetchResult = fetchConfig(accUrl, userAgent)
         val durationMs  = System.currentTimeMillis() - start
 
         if (fetchResult.statusCode < 200 || fetchResult.statusCode >= 300) {
@@ -294,7 +294,7 @@ internal suspend fun executeRefreshWith(
         } else {
             val headerValue = fetchResult.headers["subscription-userinfo"]
             Log.i(TAG, "[CONFIG_LOAD] 加速回落成功: subscription-userinfo=$headerValue")
-            val info = parseSubscriptionUserinfo(headerValue)
+            val info = parseUserinfo(headerValue)
             ConfigRefreshResult(
                 status             = "success",
                 content            = fetchResult.body,
@@ -326,19 +326,19 @@ internal suspend fun executeRefreshWith(
 
 // MARK: - subscription-userinfo header parser
 
-internal data class SubscriptionInfo(
+internal data class TrafficInfo(
     val upload: Long,
     val download: Long,
     val total: Long,
     val expire: Long,
 )
 
-internal fun parseSubscriptionUserinfo(header: String?): SubscriptionInfo {
+internal fun parseUserinfo(header: String?): TrafficInfo {
     fun extract(key: String): Long {
         val match = Regex("$key=(\\d+)").find(header ?: "") ?: return 0L
         return match.groupValues[1].toLongOrNull() ?: 0L
     }
-    return SubscriptionInfo(
+    return TrafficInfo(
         upload   = extract("upload"),
         download = extract("download"),
         total    = extract("total"),

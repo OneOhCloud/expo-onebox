@@ -163,7 +163,7 @@ class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
   }
 
   async fetchSubscription(_url: string, _userAgent: string) {
-    console.log('[Web Mock] fetchSubscription:', _url);
+    console.log('[Web Mock] fetchConfig:', _url);
     return { statusCode: 200, headers: {} as Record<string, string>, body: '' };
   }
 

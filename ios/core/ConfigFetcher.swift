@@ -3,7 +3,7 @@ import Network
 
 // MARK: - Result Type
 
-struct SubscriptionFetchResult {
+struct ConfigFetchResult {
     let statusCode: Int
     let headers: [String: String]
     let body: String
@@ -11,7 +11,7 @@ struct SubscriptionFetchResult {
 
 // MARK: - Errors
 
-private enum SubscriptionFetcherError: Error, LocalizedError {
+private enum ConfigFetcherError: Error, LocalizedError {
     case malformedURL
     case dnsResolutionFailed(String)
     case noARecord
@@ -33,20 +33,20 @@ private enum SubscriptionFetcherError: Error, LocalizedError {
     }
 }
 
-// MARK: - SubscriptionFetcher
+// MARK: - ConfigFetcher
 
-struct SubscriptionFetcher {
+struct ConfigFetcher {
 
     // MARK: - Public API
 
-    /// Fetch a subscription URL using the best DNS server for resolution.
+    /// Fetch a config URL using the best DNS server for resolution.
     ///
     /// Resolves the hostname via a raw UDP A-record query, then connects using
     /// Network.framework (NWConnection) which lets us explicitly set the TLS SNI
     /// to the original hostname — even though we dial the resolved IP address.
     /// This ensures the server presents the correct certificate, and the system
     /// TLS stack performs full trust evaluation without any manual overrides.
-    static func fetch(url: URL, userAgent: String) async throws -> SubscriptionFetchResult {
+    static func fetch(url: URL, userAgent: String) async throws -> ConfigFetchResult {
         var currentURL = url
         let maxRedirects = 5
 
@@ -54,7 +54,7 @@ struct SubscriptionFetcher {
             guard let components = URLComponents(url: currentURL, resolvingAgainstBaseURL: false),
                   let host       = components.host,
                   let scheme     = components.scheme else {
-                throw SubscriptionFetcherError.malformedURL
+                throw ConfigFetcherError.malformedURL
             }
 
             let port = UInt16(exactly: components.port ?? (scheme == "https" ? 443 : 80))!
@@ -72,9 +72,9 @@ struct SubscriptionFetcher {
                 let bestDns = await DnsTester.findBest()
                 do {
                     connectTarget = try await resolveHostname(host, via: bestDns)
-                    NSLog("[SubscriptionFetcher] Resolved %@ → %@ via %@", host, connectTarget, bestDns)
+                    NSLog("[ConfigFetcher] Resolved %@ → %@ via %@", host, connectTarget, bestDns)
                 } catch {
-                    NSLog("[SubscriptionFetcher] DNS failed (%@), falling back to hostname", error.localizedDescription)
+                    NSLog("[ConfigFetcher] DNS failed (%@), falling back to hostname", error.localizedDescription)
                     connectTarget = host   // let NWConnection use system DNS
                 }
             }
@@ -89,12 +89,12 @@ struct SubscriptionFetcher {
             )
 
             // Follow standard 3xx redirects (301, 302, 303, 307, 308).
-            // Subscription URLs frequently redirect, and silently returning a
+            // Config URLs frequently redirect, and silently returning a
             // redirect response would leave the caller with an empty body.
             if (301...308).contains(result.statusCode),
                let location = result.headers["location"],
                let redirectURL = URL(string: location, relativeTo: currentURL)?.absoluteURL {
-                NSLog("[SubscriptionFetcher] Redirect %d → %@", result.statusCode, redirectURL.absoluteString)
+                NSLog("[ConfigFetcher] Redirect %d → %@", result.statusCode, redirectURL.absoluteString)
                 currentURL = redirectURL
                 continue
             }
@@ -102,7 +102,7 @@ struct SubscriptionFetcher {
             return result
         }
 
-        throw SubscriptionFetcherError.tooManyRedirects
+        throw ConfigFetcherError.tooManyRedirects
     }
 
     // MARK: - NWConnection HTTP(S) Request
@@ -120,7 +120,7 @@ struct SubscriptionFetcher {
         path:          String,
         useTLS:        Bool,
         userAgent:     String
-    ) async throws -> SubscriptionFetchResult {
+    ) async throws -> ConfigFetchResult {
 
         let parameters: NWParameters
         if useTLS {
@@ -146,7 +146,7 @@ struct SubscriptionFetcher {
         // mutations happen here — no additional locking required inside callbacks.
         let queue = DispatchQueue(label: "com.onebox.sub-fetch", qos: .userInitiated)
 
-        return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<SubscriptionFetchResult, Error>) in
+        return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<ConfigFetchResult, Error>) in
 
             // ── Finish helper ─────────────────────────────────────────────────
             // Called from the serial `queue` (callbacks) or the global timeout.
@@ -154,7 +154,7 @@ struct SubscriptionFetcher {
             var finished = false
             let finishLock = NSLock()
 
-            func finish(_ result: Result<SubscriptionFetchResult, Error>) {
+            func finish(_ result: Result<ConfigFetchResult, Error>) {
                 finishLock.lock(); defer { finishLock.unlock() }
                 guard !finished else { return }
                 finished = true
@@ -181,12 +181,12 @@ struct SubscriptionFetcher {
 
                 guard let headerStr = String(data: rawData[rawData.startIndex ..< sepRange.lowerBound],
                                              encoding: .utf8) else {
-                    finish(.failure(SubscriptionFetcherError.invalidResponse))
+                    finish(.failure(ConfigFetcherError.invalidResponse))
                     return
                 }
                 var lines = headerStr.components(separatedBy: "\r\n")
                 guard !lines.isEmpty else {
-                    finish(.failure(SubscriptionFetcherError.invalidResponse))
+                    finish(.failure(ConfigFetcherError.invalidResponse))
                     return
                 }
 
@@ -213,14 +213,14 @@ struct SubscriptionFetcher {
                 let body = rawData.dropFirst(start)
                 guard body.count >= needed else { return }
                 let text = String(data: body.prefix(needed), encoding: .utf8) ?? ""
-                finish(.success(SubscriptionFetchResult(
+                finish(.success(ConfigFetchResult(
                     statusCode: statusCode, headers: respHeaders, body: text)))
             }
 
             // ── Connection-close / chunked completion ─────────────────────────
             func completeOnEOF() {
                 guard let start = headersEnd else {
-                    finish(.failure(SubscriptionFetcherError.invalidResponse))
+                    finish(.failure(ConfigFetcherError.invalidResponse))
                     return
                 }
                 let bodyData = Data(rawData.dropFirst(start))
@@ -230,7 +230,7 @@ struct SubscriptionFetcher {
                 } else {
                     text = String(data: bodyData, encoding: .utf8) ?? ""
                 }
-                finish(.success(SubscriptionFetchResult(
+                finish(.success(ConfigFetchResult(
                     statusCode: statusCode, headers: respHeaders, body: text)))
             }
 
@@ -290,7 +290,7 @@ struct SubscriptionFetcher {
             // Queued receiveMore() closures on `queue` also see finished == true
             // and return immediately — no double-resume risk.
             DispatchQueue.global().asyncAfter(deadline: .now() + 30) {
-                finish(.failure(SubscriptionFetcherError.timeout))
+                finish(.failure(ConfigFetcherError.timeout))
             }
         }
     }
@@ -337,7 +337,7 @@ struct SubscriptionFetcher {
                 guard fd > 0 else {
                     lock.withLock {
                         guard !resumed else { return }; resumed = true
-                        continuation.resume(throwing: SubscriptionFetcherError.dnsResolutionFailed("socket() failed"))
+                        continuation.resume(throwing: ConfigFetcherError.dnsResolutionFailed("socket() failed"))
                     }
                     return
                 }
@@ -352,7 +352,7 @@ struct SubscriptionFetcher {
                 guard inet_pton(AF_INET, dnsServer, &addr.sin_addr) == 1 else {
                     lock.withLock {
                         guard !resumed else { return }; resumed = true
-                        continuation.resume(throwing: SubscriptionFetcherError.dnsResolutionFailed("Invalid server: \(dnsServer)"))
+                        continuation.resume(throwing: ConfigFetcherError.dnsResolutionFailed("Invalid server: \(dnsServer)"))
                     }
                     return
                 }
@@ -369,7 +369,7 @@ struct SubscriptionFetcher {
                 guard sent > 0 else {
                     lock.withLock {
                         guard !resumed else { return }; resumed = true
-                        continuation.resume(throwing: SubscriptionFetcherError.dnsResolutionFailed("sendto() failed"))
+                        continuation.resume(throwing: ConfigFetcherError.dnsResolutionFailed("sendto() failed"))
                     }
                     return
                 }
@@ -380,18 +380,18 @@ struct SubscriptionFetcher {
                 lock.withLock {
                     guard !resumed else { return }; resumed = true
                     guard n >= 12 else {
-                        continuation.resume(throwing: SubscriptionFetcherError.malformedDNSResponse); return
+                        continuation.resume(throwing: ConfigFetcherError.malformedDNSResponse); return
                     }
                     let respID = (UInt16(buf[0]) << 8) | UInt16(buf[1])
                     guard respID == txID else {
-                        continuation.resume(throwing: SubscriptionFetcherError.malformedDNSResponse); return
+                        continuation.resume(throwing: ConfigFetcherError.malformedDNSResponse); return
                     }
                     guard (buf[2] & 0x80) != 0, (buf[3] & 0x0F) == 0 else {
-                        continuation.resume(throwing: SubscriptionFetcherError.dnsResolutionFailed("RCODE=\(buf[3] & 0x0F)")); return
+                        continuation.resume(throwing: ConfigFetcherError.dnsResolutionFailed("RCODE=\(buf[3] & 0x0F)")); return
                     }
                     let ancount = Int((UInt16(buf[6]) << 8) | UInt16(buf[7]))
                     guard ancount > 0 else {
-                        continuation.resume(throwing: SubscriptionFetcherError.noARecord); return
+                        continuation.resume(throwing: ConfigFetcherError.noARecord); return
                     }
                     do {
                         let ip = try parseFirstARecord(from: buf, length: n, ancount: ancount)
@@ -456,7 +456,7 @@ struct SubscriptionFetcher {
             }
             off += rdlength
         }
-        throw SubscriptionFetcherError.noARecord
+        throw ConfigFetcherError.noARecord
     }
 
     // MARK: - Helper
