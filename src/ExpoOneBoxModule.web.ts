@@ -263,6 +263,14 @@ class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
   async isBackgroundConfigRefreshRegistered(): Promise<boolean> {
     return false;
   }
+
+  getBackgroundWorkerRunLog() {
+    return [];
+  }
+
+  clearBackgroundWorkerRunLog() {
+    // no-op on web
+  }
 }
 
 export default registerWebModule(ExpoOneBoxModule, 'ExpoOneBox');

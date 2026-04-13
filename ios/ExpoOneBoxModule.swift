@@ -239,6 +239,17 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
             BackgroundConfigRefresh.isRegistered()
         }
 
+        // iOS-side run log is not yet implemented — returns empty array so the
+        // cross-platform JS binding stays valid. UNVERIFIED: iOS BGTask history
+        // is not persisted; a follow-up task can add parity with Android.
+        Function("getBackgroundWorkerRunLog") { () -> [[String: Any]] in
+            return []
+        }
+
+        Function("clearBackgroundWorkerRunLog") { () -> Void in
+            // no-op on iOS
+        }
+
         // Copies the bundled asset (sourceUri = file:// URI) into the AppGroup Caches dir as tun.db.
         // Skips if the destination already exists. Returns true if copied, false if skipped.
         AsyncFunction("copy2CacheDbPath") { (sourceUri: String) -> Bool in

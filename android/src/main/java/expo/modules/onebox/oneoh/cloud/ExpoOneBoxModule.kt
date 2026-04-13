@@ -520,6 +520,16 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
             BackgroundConfigWorker.isRegistered(context)
         }
 
+        // Append-only run log — unaffected by getLastConfigRefreshResult's clear.
+        // Use this to verify whether doWork() was actually invoked by the system.
+        Function("getBackgroundWorkerRunLog") {
+            BackgroundConfigWorker.loadRunLog(context)
+        }
+
+        Function("clearBackgroundWorkerRunLog") {
+            BackgroundConfigWorker.clearRunLog(context)
+        }
+
         View(ExpoOneBoxView::class) {
             Prop("url") { view: ExpoOneBoxView, url: URL ->
                 view.webView.loadUrl(url.toString())
