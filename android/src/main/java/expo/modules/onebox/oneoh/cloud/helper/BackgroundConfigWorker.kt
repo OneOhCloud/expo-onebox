@@ -100,7 +100,7 @@ class BackgroundConfigWorker(
                 .apply()
         }
 
-        fun loadLastResult(context: Context): Map<String, Any>? {
+        fun loadLastResult(context: Context): Map<String, Any?>? {
             val json = context.getSharedPreferences(BG_PREFS_NAME, Context.MODE_PRIVATE)
                 .getString("last_result", null) ?: return null
             return try {
