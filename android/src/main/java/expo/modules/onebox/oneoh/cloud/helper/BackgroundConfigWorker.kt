@@ -16,8 +16,6 @@ import java.util.concurrent.TimeUnit
 
 private const val TAG = "BackgroundConfigWorker"
 internal const val BG_PREFS_NAME = "expo_onebox_background_config"
-private const val RUN_LOG_KEY = "worker_run_log"
-private const val MAX_RUN_LOG_ENTRIES = 30
 private val gson = Gson()
 
 // MARK: - Result model
@@ -80,15 +78,6 @@ class BackgroundConfigWorker(
                 request,
             )
             Log.i(TAG, "Scheduled periodic work every ${clamped}s, workId=${request.id}")
-            appendRunLog(
-                context,
-                mapOf(
-                    "event" to "scheduled",
-                    "time" to Instant.now().toString(),
-                    "intervalSeconds" to clamped,
-                    "workId" to request.id.toString(),
-                ),
-            )
         }
 
         fun cancel(context: Context) {
@@ -125,48 +114,9 @@ class BackgroundConfigWorker(
                 .edit().remove("last_result").apply()
         }
 
-        /**
-         * Append-only run log. NOT cleared by JS reads — safe to inspect any time.
-         * Bounded to the most recent [MAX_RUN_LOG_ENTRIES] entries.
-         */
-        fun appendRunLog(context: Context, entry: Map<String, Any?>) {
-            try {
-                val prefs = context.getSharedPreferences(BG_PREFS_NAME, Context.MODE_PRIVATE)
-                val existing = prefs.getString(RUN_LOG_KEY, null)
-                val list: MutableList<Map<String, Any?>> = if (existing.isNullOrEmpty()) {
-                    mutableListOf()
-                } else {
-                    try {
-                        @Suppress("UNCHECKED_CAST")
-                        (gson.fromJson(existing, List::class.java) as? List<Map<String, Any?>>)
-                            ?.toMutableList() ?: mutableListOf()
-                    } catch (_: Exception) { mutableListOf() }
-                }
-                list.add(entry)
-                while (list.size > MAX_RUN_LOG_ENTRIES) list.removeAt(0)
-                prefs.edit().putString(RUN_LOG_KEY, gson.toJson(list)).apply()
-            } catch (e: Exception) {
-                Log.w(TAG, "appendRunLog failed: ${e.message}")
-            }
-        }
-
-        fun loadRunLog(context: Context): List<Map<String, Any?>> {
-            val prefs = context.getSharedPreferences(BG_PREFS_NAME, Context.MODE_PRIVATE)
-            val raw = prefs.getString(RUN_LOG_KEY, null) ?: return emptyList()
-            return try {
-                @Suppress("UNCHECKED_CAST")
-                (gson.fromJson(raw, List::class.java) as? List<Map<String, Any?>>) ?: emptyList()
-            } catch (_: Exception) { emptyList() }
-        }
-
-        fun clearRunLog(context: Context) {
-            context.getSharedPreferences(BG_PREFS_NAME, Context.MODE_PRIVATE)
-                .edit().remove(RUN_LOG_KEY).apply()
-        }
     }
 
     override suspend fun doWork(): Result {
-        val invokedAt = Instant.now().toString()
         val prefs = applicationContext.getSharedPreferences(BG_PREFS_NAME, Context.MODE_PRIVATE)
         val url          = prefs.getString("config_url", null)
         val userAgent    = prefs.getString("user_agent", "") ?: ""
@@ -176,33 +126,11 @@ class BackgroundConfigWorker(
 
         if (url.isNullOrEmpty()) {
             Log.d(TAG, "No config URL stored, skipping")
-            appendRunLog(
-                applicationContext,
-                mapOf(
-                    "event" to "doWork",
-                    "time" to invokedAt,
-                    "status" to "skipped",
-                    "reason" to "no_config_url",
-                    "runAttempt" to runAttemptCount,
-                ),
-            )
             return Result.success()
         }
 
         val result = executeRefreshWith(url, accelerateUrl, userAgent)
         storeResult(applicationContext, result)
-        appendRunLog(
-            applicationContext,
-            mapOf(
-                "event" to "doWork",
-                "time" to invokedAt,
-                "status" to result.status,
-                "method" to result.method,
-                "durationMs" to result.durationMs,
-                "error" to result.error,
-                "runAttempt" to runAttemptCount,
-            ),
-        )
         return if (result.status == "success") Result.success() else Result.retry()
     }
 }

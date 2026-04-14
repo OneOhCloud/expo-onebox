@@ -264,13 +264,6 @@ class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
     return false;
   }
 
-  getBackgroundWorkerRunLog() {
-    return [];
-  }
-
-  clearBackgroundWorkerRunLog() {
-    // no-op on web
-  }
 }
 
 export default registerWebModule(ExpoOneBoxModule, 'ExpoOneBox');

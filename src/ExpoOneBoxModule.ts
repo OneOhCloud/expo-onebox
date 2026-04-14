@@ -57,32 +57,6 @@ declare class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
 
   /** Whether the native background refresh task is currently scheduled. */
   isBackgroundConfigRefreshRegistered(): Promise<boolean>;
-
-  /**
-   * Append-only diagnostic log of background worker invocations.
-   * Unlike `getLastConfigRefreshResult`, reading this does NOT clear it,
-   * so it can be used to verify whether `doWork()` was actually invoked.
-   * Android: entries include `event` (scheduled | doWork), `time`, `status`,
-   * `method`, `durationMs`, `error`, `runAttempt`, `workId`, `intervalSeconds`.
-   * iOS / Web: always returns `[]` (not yet implemented).
-   */
-  getBackgroundWorkerRunLog(): WorkerRunLogEntry[];
-
-  /** Clears the append-only worker run log (Android only). */
-  clearBackgroundWorkerRunLog(): void;
-}
-
-export interface WorkerRunLogEntry {
-  event: 'scheduled' | 'doWork';
-  time: string;
-  status?: 'success' | 'failed' | 'skipped';
-  reason?: string;
-  method?: 'primary' | 'fallback';
-  durationMs?: number;
-  error?: string | null;
-  runAttempt?: number;
-  workId?: string;
-  intervalSeconds?: number;
 }
 
 // This call loads the native module object from the JSI.

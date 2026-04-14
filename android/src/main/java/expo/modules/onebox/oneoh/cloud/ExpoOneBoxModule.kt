@@ -504,7 +504,9 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
         AsyncFunction("executeConfigRefreshNow") { url: String, userAgent: String, accelerateUrl: String?, testPrimaryUrlUnavailable: Boolean? ->
             val acc    = accelerateUrl?.takeIf { it.isNotBlank() }
             val result = runBlocking { executeRefreshWith(url, acc, userAgent, testPrimaryUrlUnavailable ?: false) }
-            BackgroundConfigWorker.storeResult(context, result)
+            // Do NOT storeResult here: JS receives the result directly and calls
+            // applyResultToSBConfig() itself. Storing would overwrite any pending
+            // background doWork() result in SharedPrefs, causing it to be lost.
             result.toMap()
         }
 
@@ -518,16 +520,6 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
         // Whether a WorkManager periodic task is currently enqueued/running.
         AsyncFunction("isBackgroundConfigRefreshRegistered") {
             BackgroundConfigWorker.isRegistered(context)
-        }
-
-        // Append-only run log — unaffected by getLastConfigRefreshResult's clear.
-        // Use this to verify whether doWork() was actually invoked by the system.
-        Function("getBackgroundWorkerRunLog") {
-            BackgroundConfigWorker.loadRunLog(context)
-        }
-
-        Function("clearBackgroundWorkerRunLog") {
-            BackgroundConfigWorker.clearRunLog(context)
         }
 
         View(ExpoOneBoxView::class) {
