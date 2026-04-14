@@ -480,7 +480,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
 
         // Register (or update) the WorkManager periodic task.
         AsyncFunction("registerBackgroundConfigRefresh") { url: String, userAgent: String, intervalSeconds: Int, accelerateUrl: String? ->
-            context.getSharedPreferences(BG_PREFS_NAME, android.content.Context.MODE_PRIVATE)
+            app.getSharedPreferences(BG_PREFS_NAME, android.content.Context.MODE_PRIVATE)
                 .edit()
                 .putString("config_url", url)
                 .putString("user_agent", userAgent)
@@ -491,13 +491,13 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
                     else ed.remove("accelerate_url")
                 }
                 .apply()
-            BackgroundConfigWorker.schedule(context, intervalSeconds.toLong())
+            BackgroundConfigWorker.schedule(app, intervalSeconds.toLong())
             Log.i(TAG, "Background config refresh registered (interval=${intervalSeconds}s, accelerate=${accelerateUrl != null})")
         }
 
         // Cancel the periodic WorkManager task.
         AsyncFunction("unregisterBackgroundConfigRefresh") {
-            BackgroundConfigWorker.cancel(context)
+            BackgroundConfigWorker.cancel(app)
         }
 
         // Execute config refresh immediately (foreground / dev screen).
@@ -511,15 +511,16 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
         }
 
         // Return and clear the last result stored by the background worker.
+        // Use app (not reactContext) to avoid NullPointerException during bridge teardown.
         Function("getLastConfigRefreshResult") {
-            val result = BackgroundConfigWorker.loadLastResult(context) ?: return@Function null
-            BackgroundConfigWorker.clearLastResult(context)
+            val result = BackgroundConfigWorker.loadLastResult(app) ?: return@Function null
+            BackgroundConfigWorker.clearLastResult(app)
             return@Function result
         }
 
         // Whether a WorkManager periodic task is currently enqueued/running.
         AsyncFunction("isBackgroundConfigRefreshRegistered") {
-            BackgroundConfigWorker.isRegistered(context)
+            BackgroundConfigWorker.isRegistered(app)
         }
 
         View(ExpoOneBoxView::class) {

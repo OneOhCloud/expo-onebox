@@ -104,8 +104,10 @@ class BackgroundConfigWorker(
             val json = context.getSharedPreferences(BG_PREFS_NAME, Context.MODE_PRIVATE)
                 .getString("last_result", null) ?: return null
             return try {
-                @Suppress("UNCHECKED_CAST")
-                gson.fromJson(json, Map::class.java) as? Map<String, Any>
+                // Deserialize into the typed data class first so numeric fields become
+                // proper Long/String values. Using Map::class.java produces LazilyParsedNumber
+                // for all numbers, which the Expo Modules API cannot serialize to JS.
+                gson.fromJson(json, ConfigRefreshResult::class.java).toMap()
             } catch (_: Exception) { null }
         }
 
