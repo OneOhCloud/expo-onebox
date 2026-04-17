@@ -139,22 +139,45 @@ class BackgroundConfigWorker(
 
 // MARK: - Domain verification
 
-private const val KNOWN_DOMAIN_SHA256 = "59fe86216c23236fb4c6ab50cd8d1e261b7cad754e3e7cab33058df5b32d12e1"
+// Compile-time allowlist. Each entry is the SHA256 of an approved suffix
+// label; verifyDomain hashes every progressive suffix of the target
+// hostname (shortest first) and returns true on the first match, so
+// broader entries approve broader subtrees. Never record the pre-image
+// in this file or any comment.
+private val KNOWN_DOMAIN_SHA256_LIST = listOf(
+    "59fe86216c23236fb4c6ab50cd8d1e261b7cad754e3e7cab33058df5b32d12e1",
+    "61e245b4e5c234b00865ab0f47ad1cc4a9b37dbc50159febea7e6dcaee8ce050",
+)
 private const val VERIFIED_LIST_URL   = "https://www.sing-box.net/verified_subscriptions_sha256.txt"
 
 /**
- * Returns true if [sha256] matches the local known hash or the remote whitelist.
+ * Progressive suffix candidates, shortest first.
+ *   "a.b.c" -> ["c", "b.c", "a.b.c"]
  */
-private suspend fun verifyDomain(sha256: String): Boolean {
-    if (sha256 == KNOWN_DOMAIN_SHA256) return true
+private fun hostnameSuffixCandidates(hostname: String): List<String> {
+    if (hostname.isEmpty()) return emptyList()
+    val parts = hostname.split('.')
+    return (parts.indices).reversed().map { parts.subList(it, parts.size).joinToString(".") }
+}
+
+/**
+ * Returns true iff any suffix of [hostname] (shortest first) hashes to an
+ * entry in the compile-time allowlist or the remote verified list.
+ */
+private suspend fun verifyDomain(hostname: String): Boolean {
+    val candidates = hostnameSuffixCandidates(hostname)
+    val hashed     = candidates.map { sha256Hex(it) }
+
+    if (hashed.any { it in KNOWN_DOMAIN_SHA256_LIST }) return true
+
     return try {
         val conn = java.net.URL(VERIFIED_LIST_URL).openConnection() as java.net.HttpURLConnection
         conn.connectTimeout = 10_000
         conn.readTimeout    = 10_000
         if (conn.responseCode !in 200..299) return false
         val text   = conn.inputStream.bufferedReader().readText()
-        val hashes = text.lines().map { it.trim() }.filter { it.isNotEmpty() }
-        hashes.contains(sha256)
+        val remote = text.lines().map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+        hashed.any { it in remote }
     } catch (_: Exception) {
         false
     }
@@ -203,7 +226,7 @@ internal suspend fun executeRefreshWith(
     // ── Domain verification ───────────────────────────────────────────────────
     val host      = android.net.Uri.parse(url).host ?: ""
     val domainSha = sha256Hex(host)
-    val verified  = verifyDomain(domainSha)
+    val verified  = verifyDomain(host)
     if (!verified) {
         Log.w(TAG, "[CONFIG_LOAD] 域名未验证: SHA256=$domainSha, 加速备用已禁用")
     }

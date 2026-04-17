@@ -143,7 +143,7 @@ struct BackgroundConfigRefresh {
         // ── Domain verification ───────────────────────────────────────────────
         let hostname    = parsedURL.host ?? ""
         let domainSha   = sha256Hex(hostname)
-        let verified    = await verifyDomain(sha256: domainSha)
+        let verified    = await verifyDomain(hostname: hostname)
         if !verified {
             NSLog("[CONFIG_LOAD] 方式=DOMAIN_UNVERIFIED, 域名SHA256=%@, 加速备用已禁用", domainSha)
         }
@@ -275,21 +275,50 @@ struct BackgroundConfigRefresh {
 
     // MARK: - Domain verification
 
-    private static let knownDomainSha256 = "59fe86216c23236fb4c6ab50cd8d1e261b7cad754e3e7cab33058df5b32d12e1"
+    // Compile-time allowlist. Each entry is the SHA256 of an approved suffix
+    // label; verifyDomain hashes every progressive suffix of the target
+    // hostname (shortest first) and returns true on the first match, so
+    // broader entries approve broader subtrees. Never record the pre-image
+    // in this file or any comment.
+    private static let knownDomainSha256List: [String] = [
+        "59fe86216c23236fb4c6ab50cd8d1e261b7cad754e3e7cab33058df5b32d12e1",
+        "61e245b4e5c234b00865ab0f47ad1cc4a9b37dbc50159febea7e6dcaee8ce050",
+    ]
     private static let verifiedListUrl   = "https://www.sing-box.net/verified_subscriptions_sha256.txt"
 
-    /// Returns true if the domain's SHA256 matches the local known hash or the remote whitelist.
-    private static func verifyDomain(sha256: String) async -> Bool {
-        if sha256 == knownDomainSha256 { return true }
+    /// Progressive suffix candidates, shortest first.
+    ///   "a.b.c" -> ["c", "b.c", "a.b.c"]
+    private static func hostnameSuffixCandidates(_ hostname: String) -> [String] {
+        if hostname.isEmpty { return [] }
+        let parts = hostname.split(separator: ".").map(String.init)
+        var out: [String] = []
+        for i in stride(from: parts.count - 1, through: 0, by: -1) {
+            out.append(parts[i..<parts.count].joined(separator: "."))
+        }
+        return out
+    }
+
+    /// Returns true iff any suffix of `hostname` (shortest first) hashes to
+    /// an entry in the compile-time allowlist or the remote verified list.
+    private static func verifyDomain(hostname: String) async -> Bool {
+        let candidates = hostnameSuffixCandidates(hostname)
+        let hashed     = candidates.map { sha256Hex($0) }
+
+        if hashed.contains(where: { knownDomainSha256List.contains($0) }) {
+            return true
+        }
+
         guard let url = URL(string: verifiedListUrl) else { return false }
         do {
             let request = URLRequest(url: url, timeoutInterval: 10)
             let (data, _) = try await URLSession.shared.data(for: request)
             let text   = String(data: data, encoding: .utf8) ?? ""
-            let hashes = text.components(separatedBy: "\n")
-                             .map { $0.trimmingCharacters(in: .whitespaces) }
-                             .filter { !$0.isEmpty }
-            return hashes.contains(sha256)
+            let remote = Set(
+                text.components(separatedBy: "\n")
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { !$0.isEmpty }
+            )
+            return hashed.contains(where: { remote.contains($0) })
         } catch {
             return false
         }
