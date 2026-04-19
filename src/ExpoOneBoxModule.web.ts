@@ -68,7 +68,11 @@ class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
   }
 
   getLibBoxVersion(): string {
-    return '1.12.0-web-mock';
+    // Native returns bare MAJOR.MINOR.PATCH (no v-prefix) via LibboxVersion()
+    // / Libbox.version(). Mirror the shape so getSingBox*Version helpers split
+    // cleanly across platforms. Keep numeric in sync with SING_BOX_TAG in
+    // modules/expo-onebox/helper/Makefile.
+    return '1.13.8';
   }
 
   async start(config: string): Promise<void> {
