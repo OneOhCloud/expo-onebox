@@ -23,11 +23,12 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
     public func definition() -> ModuleDefinition {
         Name("ExpoOneBox")
 
-        Events("onStatusChange", "onError", "onLog", "onTrafficUpdate", "onGroupUpdate", "onConfigRefreshResult")
+        Events("onStatusChange", "onError", "onLog", "onTrafficUpdate", "onGroupUpdate", "onConfigRefreshResult", "onNativeLog")
 
         OnCreate {
             self.initializeLibbox()
             self.observeVPNStatus()
+            self.sendNativeLog(level: "info", tag: "Module", message: "ExpoOneBox Swift module initialized")
             // Sync initial VPN state so JS gets correct status on app launch
             // (NEVPNStatusDidChange doesn't fire on launch if VPN was already running)
             Task {
@@ -36,6 +37,7 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
         }
 
         OnDestroy {
+            self.sendNativeLog(level: "info", tag: "Module", message: "ExpoOneBox Swift module destroying")
             self.cleanup()
         }
 
@@ -86,10 +88,12 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
         }
 
         AsyncFunction("start") { (config: String) in
+            self.sendNativeLog(level: "info", tag: "Tunnel", message: "start() requested, config bytes=\(config.count)")
             try await self.startVPN(config: config)
         }
 
         AsyncFunction("stop") {
+            self.sendNativeLog(level: "info", tag: "Tunnel", message: "stop() requested")
             await self.stopVPN()
         }
 
@@ -629,6 +633,8 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
         default: statusName = "unknown"
         }
 
+        sendNativeLog(level: "info", tag: "Tunnel", message: "status → \(statusName)")
+
         sendEvent("onStatusChange", [
             "status": status,
             "statusName": statusName,
@@ -651,6 +657,22 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
         }
         sendEvent("onLog", [
             "message": message
+        ])
+    }
+
+    /// Emit a native-layer log line to JS.
+    ///
+    /// Distinct from `sendLog` (libbox / sing-box core output). This
+    /// channel carries the Swift module's own activity — VPN manager
+    /// lifecycle, permission flows, Network Extension transitions — so
+    /// the user can distinguish "the JS–native bridge is alive" from
+    /// "the core is running."
+    internal func sendNativeLog(level: String, tag: String, message: String) {
+        NSLog("[ExpoOneBox/%@] %@", tag, message)
+        sendEvent("onNativeLog", [
+            "level": level,
+            "tag": tag,
+            "message": message,
         ])
     }
 

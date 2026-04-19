@@ -166,23 +166,54 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
         Libbox.redirectStderr(File(workingDir, "stderr.log").path)
     }
 
+    /**
+     * Emit a native-layer log line to JS.
+     *
+     * Distinct from `sendEvent("onLog", ...)` which carries the libbox /
+     * sing-box core output. This channel is for the Kotlin module's own
+     * activity — lifecycle hooks, permission flows, background worker
+     * transitions — so the user can distinguish "the JS–native bridge is
+     * alive" from "the core is running."
+     *
+     * Writes to logcat at the matching level as well, so platform
+     * tooling (`adb logcat`) still sees the event with source context.
+     */
+    private fun sendNativeLog(level: String, tag: String, message: String) {
+        val logTag = "ExpoOneBox/$tag"
+        when (level) {
+            "error" -> Log.e(logTag, message)
+            "warn"  -> Log.w(logTag, message)
+            else    -> Log.i(logTag, message)
+        }
+        try {
+            sendEvent("onNativeLog", mapOf(
+                "level" to level,
+                "tag" to tag,
+                "message" to message,
+            ))
+        } catch (_: Exception) {}
+    }
+
     override fun definition() = ModuleDefinition {
         Name("ExpoOneBox")
 
         // 定义发送到 JS 的事件
-        Events("onStatusChange", "onError", "onLog", "onTrafficUpdate", "onGroupUpdate", "onConfigRefreshResult")
+        Events("onStatusChange", "onError", "onLog", "onTrafficUpdate", "onGroupUpdate", "onConfigRefreshResult", "onNativeLog")
 
         OnCreate {
             try {
                 initialize()
                 connection = ServiceConnection(context, this@ExpoOneBoxModule)
                 connection.connect()
+                sendNativeLog("info", "Module", "ExpoOneBox Kotlin module initialized")
             } catch (e: Exception) {
                 Log.e(TAG, "初始化失败", e)
+                sendNativeLog("error", "Module", "init failed: ${e.message}")
             }
         }
 
         OnDestroy {
+            sendNativeLog("info", "Module", "ExpoOneBox Kotlin module destroying")
             try {
                 statusMonitor.disconnect()
             } catch (e: Exception) {
@@ -316,6 +347,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
         }
 
         AsyncFunction("start") { config: String ->
+            sendNativeLog("info", "Tunnel", "start() requested, config bytes=${config.length}")
             val processedConfig = processConfig(config, context)
 
             // 打印实际传给 VPN 的配置中 inbounds 地址信息，用于排查
@@ -345,7 +377,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
         }
 
         AsyncFunction("stop") {
-
+            sendNativeLog("info", "Tunnel", "stop() requested")
             // 发送停止广播
             context.sendBroadcast(
                 Intent(Action.SERVICE_CLOSE).setPackage(context.packageName)
@@ -584,6 +616,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
             currentStatus = status
 
             Log.d(TAG, "Status changed: $statusName, wasStarting=$wasStarting, isStartingUp=$isStartingUp")
+            sendNativeLog("info", "Tunnel", "status → $statusName")
 
             sendEvent("onStatusChange", mapOf(
                 "status" to status.ordinal,

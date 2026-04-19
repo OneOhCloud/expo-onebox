@@ -103,6 +103,19 @@ export interface ConfigRefreshResult {
   actualUrl?: string;  // 加速回落时为构造后的完整 URL
 }
 
+// 原生层日志事件
+// 由 Kotlin / Swift 层在关键生命周期点发出（初始化、VPN 启停、权限请求、
+// 后台刷新等）。与 `onLog` 分开——`onLog` 是 sing-box 内核（libbox）的
+// 输出，`onNativeLog` 是原生模块自己的代码路径。
+export type NativeLogEventPayload = {
+  /** 原生层日志级别 —— 对齐 iOS os_log / Android Log 的级别语义 */
+  level: 'info' | 'warn' | 'error';
+  /** 短标签，用于区分子系统（e.g. "Module", "BoxService", "Tunnel"） */
+  tag: string;
+  /** 正文 */
+  message: string;
+};
+
 export type ExpoOneBoxModuleEvents = {
   onStatusChange: (params: StatusChangeEventPayload) => void;
   onError: (params: ErrorEventPayload) => void;
@@ -111,6 +124,7 @@ export type ExpoOneBoxModuleEvents = {
   onGroupUpdate: (params: GroupUpdateEventPayload) => void;
   onChange: (params: ChangeEventPayload) => void;
   onConfigRefreshResult: (params: ConfigRefreshResult) => void;
+  onNativeLog: (params: NativeLogEventPayload) => void;
 };
 
 export type ChangeEventPayload = {
