@@ -1,4 +1,4 @@
-SING_BOX_TAG = "v1.13.0"
+SING_BOX_TAG = "v1.13.8"
 
 # 获取 https://github.com/SagerNet/cronet-go 最新版本的tag
 CRONET_GO_VERSION := $(shell curl -sL https://api.github.com/repos/SagerNet/cronet-go/releases/latest | sed -n 's/.*"tag_name":[[:space:]]*"\([^"\]*\)".*/\1/p')

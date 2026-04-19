@@ -111,7 +111,10 @@ extension_target.build_configurations.each do |config|
   config.build_settings['SKIP_INSTALL'] = 'YES'
   config.build_settings['CODE_SIGN_STYLE'] = 'Automatic'
   config.build_settings['FRAMEWORK_SEARCH_PATHS'] = ['$(inherited)', "\"#{EXTENSION_RELATIVE_PATH}\""]
-  config.build_settings['OTHER_LDFLAGS'] = '$(inherited) -ObjC'
+  # -lresolv: sing-box v1.13+ DNS transport calls libresolv on Apple platforms
+  # (res_9_ninit / res_9_nclose / res_9_nsearch). Libbox.framework is a static
+  # archive and can't self-link, so the consumer target must.
+  config.build_settings['OTHER_LDFLAGS'] = '$(inherited) -ObjC -lresolv'
   config.build_settings['DEFINES_MODULE'] = 'YES'
   config.build_settings['ENABLE_USER_SCRIPT_SANDBOXING'] = 'NO'  # 重要：允许脚本运行
 end
@@ -133,6 +136,15 @@ if main_target
   product_ref = extension_target.product_reference
   build_file = embed_phase.add_file_reference(product_ref, true)
   build_file.settings = { 'ATTRIBUTES' => ['RemoveHeadersOnCopy'] }
+
+  # Main app also links Libbox transitively (via ExpoOneBox pod).
+  # Same -lresolv reason as the Tunnel target.
+  main_target.build_configurations.each do |config|
+    existing = config.build_settings['OTHER_LDFLAGS'] || ['$(inherited)']
+    flags = existing.is_a?(Array) ? existing.dup : [existing]
+    flags << '-lresolv' unless flags.include?('-lresolv')
+    config.build_settings['OTHER_LDFLAGS'] = flags
+  end
 end
 
 # 10. 保存项目
