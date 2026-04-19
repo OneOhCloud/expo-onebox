@@ -82,7 +82,9 @@ export interface ConfigFetchResult {
 }
 
 export interface VerificationData {
-  knownSha256: string;
+  /** Compile-time + KV-override known domain SHA256 list (approves broader subtrees via suffix). */
+  knownSha256List: string[];
+  /** Remote-fetched verified domain SHA256 list (TTL-cached in JS, pushed here for bg worker reuse). */
   verifiedSha256List: string[];
 }
 

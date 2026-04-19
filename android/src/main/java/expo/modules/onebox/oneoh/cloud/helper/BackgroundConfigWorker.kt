@@ -116,6 +116,51 @@ class BackgroundConfigWorker(
                 .edit().remove("last_result").apply()
         }
 
+        // ─── Domain-verification cache (pushed from JS) ──────────────────────
+
+        private const val KEY_KNOWN_DOMAIN_SHA256     = "known_domain_sha256_list"
+        private const val KEY_VERIFIED_DOMAIN_SHA256  = "verified_domain_sha256_list"
+        private const val KEY_DOMAIN_VERIFICATION_AT  = "domain_verification_updated_at"
+        /// Mirrors `CACHE_TTL_MS` in `src/utils/domain-verification.ts` (24 h).
+        internal const val DOMAIN_VERIFICATION_TTL_MS = 24L * 60L * 60L * 1000L
+
+        /// Called from JS (`ExpoOneBoxModule.setVerificationData`) after every
+        /// successful `updateVerificationData`. Writes a JSON array + timestamp
+        /// into the same SharedPreferences the worker already reads.
+        fun saveDomainVerificationCache(
+            context: Context,
+            known: List<String>,
+            verified: List<String>,
+        ) {
+            context.getSharedPreferences(BG_PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .putString(KEY_KNOWN_DOMAIN_SHA256,    gson.toJson(known))
+                .putString(KEY_VERIFIED_DOMAIN_SHA256, gson.toJson(verified))
+                .putLong(KEY_DOMAIN_VERIFICATION_AT,   System.currentTimeMillis())
+                .apply()
+        }
+
+        /// Returns the JS-pushed allowlist if present and not older than the TTL.
+        /// Null result signals the caller should fall back to the compile-time
+        /// list + live fetch.
+        internal fun loadFreshDomainVerificationCache(
+            context: Context,
+        ): Pair<List<String>, List<String>>? {
+            val prefs     = context.getSharedPreferences(BG_PREFS_NAME, Context.MODE_PRIVATE)
+            val updatedAt = prefs.getLong(KEY_DOMAIN_VERIFICATION_AT, 0L)
+            if (updatedAt <= 0L) return null
+            if (System.currentTimeMillis() - updatedAt >= DOMAIN_VERIFICATION_TTL_MS) return null
+
+            val knownJson    = prefs.getString(KEY_KNOWN_DOMAIN_SHA256,    null) ?: return null
+            val verifiedJson = prefs.getString(KEY_VERIFIED_DOMAIN_SHA256, null) ?: return null
+            return try {
+                val known    = gson.fromJson(knownJson,    Array<String>::class.java)?.toList()    ?: emptyList()
+                val verified = gson.fromJson(verifiedJson, Array<String>::class.java)?.toList() ?: emptyList()
+                if (known.isEmpty() && verified.isEmpty()) null
+                else known to verified
+            } catch (_: Exception) { null }
+        }
+
     }
 
     override suspend fun doWork(): Result {
@@ -131,7 +176,7 @@ class BackgroundConfigWorker(
             return Result.success()
         }
 
-        val result = executeRefreshWith(url, accelerateUrl, userAgent)
+        val result = executeRefreshWith(applicationContext, url, accelerateUrl, userAgent)
         storeResult(applicationContext, result)
         return if (result.status == "success") Result.success() else Result.retry()
     }
@@ -145,6 +190,7 @@ class BackgroundConfigWorker(
 // broader entries approve broader subtrees. Never record the pre-image
 // in this file or any comment.
 private val KNOWN_DOMAIN_SHA256_LIST = listOf(
+    "183a5526e76751b07cd57236bc8f253d5424e02a3fc7da7c30f80919e975125a",
     "59fe86216c23236fb4c6ab50cd8d1e261b7cad754e3e7cab33058df5b32d12e1",
     "61e245b4e5c234b00865ab0f47ad1cc4a9b37dbc50159febea7e6dcaee8ce050",
 )
@@ -162,14 +208,32 @@ private fun hostnameSuffixCandidates(hostname: String): List<String> {
 
 /**
  * Returns true iff any suffix of [hostname] (shortest first) hashes to an
- * entry in the compile-time allowlist or the remote verified list.
+ * entry in the allowlist. Preference order:
+ *   1. JS-pushed cache in SharedPreferences (24h TTL, zero network).
+ *   2. Compile-time `KNOWN_DOMAIN_SHA256_LIST` — always available.
+ *   3. Live fetch from `VERIFIED_LIST_URL` — only when shared cache is
+ *      missing or expired (e.g. periodic worker fires before JS has ever
+ *      called `setVerificationData`).
  */
-private suspend fun verifyDomain(hostname: String): Boolean {
+private suspend fun verifyDomain(hostname: String, context: Context): Boolean {
     val candidates = hostnameSuffixCandidates(hostname)
     val hashed     = candidates.map { sha256Hex(it) }
+    val hashedSet  = hashed.toSet()
 
+    // Source 1 — JS-pushed cache.
+    BackgroundConfigWorker.loadFreshDomainVerificationCache(context)?.let { (known, verified) ->
+        val union = (known + verified).toSet()
+        if (hashedSet.any { it in union }) return true
+        // Cache is fresh but did not match; still honour the compile-time
+        // list below before giving up.
+        if (hashed.any { it in KNOWN_DOMAIN_SHA256_LIST }) return true
+        return false
+    }
+
+    // Source 2 — compile-time fallback.
     if (hashed.any { it in KNOWN_DOMAIN_SHA256_LIST }) return true
 
+    // Source 3 — live fetch (recovery path only).
     return try {
         val conn = java.net.URL(VERIFIED_LIST_URL).openConnection() as java.net.HttpURLConnection
         conn.connectTimeout = 10_000
@@ -215,6 +279,7 @@ private fun buildAcceleratedUrl(originalUrl: String, accelerateBase: String): St
  * Test mode: simulates primary URL unavailable to test fallback path.
  */
 internal suspend fun executeRefreshWith(
+    context: Context,
     url: String,
     accelerateUrl: String?,
     userAgent: String,
@@ -226,7 +291,7 @@ internal suspend fun executeRefreshWith(
     // ── Domain verification ───────────────────────────────────────────────────
     val host      = android.net.Uri.parse(url).host ?: ""
     val domainSha = sha256Hex(host)
-    val verified  = verifyDomain(host)
+    val verified  = verifyDomain(host, context)
     if (!verified) {
         Log.w(TAG, "[CONFIG_LOAD] 域名未验证: SHA256=$domainSha, 加速备用已禁用")
     }

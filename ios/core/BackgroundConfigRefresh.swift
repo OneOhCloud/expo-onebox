@@ -51,6 +51,14 @@ struct BackgroundConfigRefresh {
     private static let kAccelerateUrl   = "bg_accelerate_url"
     private static let kLastResultJSON  = "bg_last_result_json"
     private static let kIsRegistered    = "bg_task_registered"
+    // Domain-verification cache pushed by JS (src/utils/domain-verification.ts)
+    // so the bg worker does not re-fetch sing-box.net on every wake.
+    private static let kKnownDomainSha256List    = "bg_known_domain_sha256_list"
+    private static let kVerifiedDomainSha256List = "bg_verified_domain_sha256_list"
+    private static let kDomainVerificationUpdatedAt = "bg_domain_verification_updated_at"
+    /// Shared cache is honoured for 24h; after that the worker falls back to
+    /// its own network fetch. Mirrors `CACHE_TTL_MS` in `domain-verification.ts`.
+    private static let domainVerificationTtlSeconds: Double = 24 * 3600
 
     // MARK: - Registration (must be called at app launch, before didFinishLaunching returns)
 
@@ -118,6 +126,33 @@ struct BackgroundConfigRefresh {
         } else {
             defaults.removeObject(forKey: kAccelerateUrl)
         }
+    }
+
+    /// Called from JS (`ExpoOneBoxModule.setVerificationData`) after every
+    /// successful `updateVerificationData` so the bg worker reuses the same
+    /// allowlist instead of making its own HTTP fetch. Stores an
+    /// updated-at timestamp for TTL comparison in `verifyDomain`.
+    static func saveDomainVerificationCache(known: [String], verified: [String]) {
+        guard let defaults = UserDefaults(suiteName: appGroupID) else { return }
+        defaults.set(known,    forKey: kKnownDomainSha256List)
+        defaults.set(verified, forKey: kVerifiedDomainSha256List)
+        defaults.set(Date().timeIntervalSince1970, forKey: kDomainVerificationUpdatedAt)
+    }
+
+    /// Load the JS-pushed allowlist if it exists and has not expired. A nil
+    /// return means the caller should fall back to its built-in list + live
+    /// fetch; a non-nil tuple is authoritative.
+    private static func loadFreshDomainVerificationCache() -> (known: [String], verified: [String])? {
+        guard let defaults = UserDefaults(suiteName: appGroupID) else { return nil }
+        let updatedAt = defaults.double(forKey: kDomainVerificationUpdatedAt)
+        guard updatedAt > 0,
+              Date().timeIntervalSince1970 - updatedAt < domainVerificationTtlSeconds else {
+            return nil
+        }
+        let known    = defaults.stringArray(forKey: kKnownDomainSha256List)    ?? []
+        let verified = defaults.stringArray(forKey: kVerifiedDomainSha256List) ?? []
+        if known.isEmpty && verified.isEmpty { return nil }
+        return (known, verified)
     }
 
     // MARK: - Execute refresh (usable from both background task and foreground JS call)
@@ -281,6 +316,7 @@ struct BackgroundConfigRefresh {
     // broader entries approve broader subtrees. Never record the pre-image
     // in this file or any comment.
     private static let knownDomainSha256List: [String] = [
+        "183a5526e76751b07cd57236bc8f253d5424e02a3fc7da7c30f80919e975125a",
         "59fe86216c23236fb4c6ab50cd8d1e261b7cad754e3e7cab33058df5b32d12e1",
         "61e245b4e5c234b00865ab0f47ad1cc4a9b37dbc50159febea7e6dcaee8ce050",
     ]
@@ -299,15 +335,37 @@ struct BackgroundConfigRefresh {
     }
 
     /// Returns true iff any suffix of `hostname` (shortest first) hashes to
-    /// an entry in the compile-time allowlist or the remote verified list.
+    /// an entry in the allowlist. Preference order:
+    ///   1. Shared cache pushed by JS (`setVerificationData`) — zero network,
+    ///      covers the 24 h since JS last refreshed.
+    ///   2. Compile-time `knownDomainSha256List` — always available.
+    ///   3. Live fetch from `verifiedListUrl` — only when the shared cache is
+    ///      missing or expired; the built-in list does not expire so this
+    ///      branch is strictly a recovery path.
     private static func verifyDomain(hostname: String) async -> Bool {
         let candidates = hostnameSuffixCandidates(hostname)
         let hashed     = candidates.map { sha256Hex($0) }
+        let hashedSet  = Set(hashed)
 
+        // Source 1 — JS-pushed cache.
+        if let cache = loadFreshDomainVerificationCache() {
+            let union = Set(cache.known).union(cache.verified)
+            if !hashedSet.isDisjoint(with: union) { return true }
+            // Cache exists and is fresh but did not match; still try the
+            // compile-time list below as a final check before giving up.
+            if hashed.contains(where: { knownDomainSha256List.contains($0) }) {
+                return true
+            }
+            return false
+        }
+
+        // Source 2 — compile-time fallback.
         if hashed.contains(where: { knownDomainSha256List.contains($0) }) {
             return true
         }
 
+        // Source 3 — network fetch (only reached when JS has never pushed
+        // fresh data, e.g. bg task fires before the app has ever opened).
         guard let url = URL(string: verifiedListUrl) else { return false }
         do {
             let request = URLRequest(url: url, timeoutInterval: 10)

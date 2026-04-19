@@ -203,6 +203,17 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
 
         // ─── Native Background Config Refresh ────────────────────────────────────
 
+        // Push the JS-managed domain allowlist into AppGroup UserDefaults so the
+        // BGTaskScheduler worker can verify hostnames without re-fetching the
+        // remote list. Called from `domain-verification.ts` after every
+        // successful cache update; the worker's 24h TTL gate falls back to the
+        // compile-time list when the shared cache is missing or expired.
+        AsyncFunction("setVerificationData") { (data: [String: Any]) async in
+            let known    = data["knownSha256List"]    as? [String] ?? []
+            let verified = data["verifiedSha256List"] as? [String] ?? []
+            BackgroundConfigRefresh.saveDomainVerificationCache(known: known, verified: verified)
+        }
+
         // Register (or update) the native background config refresh task.
         // Persists URL, userAgent, and interval to AppGroup UserDefaults, then
         // submits a BGAppRefreshTaskRequest so iOS wakes the app periodically.

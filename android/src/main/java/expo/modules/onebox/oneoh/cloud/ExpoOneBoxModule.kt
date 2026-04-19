@@ -478,6 +478,19 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
 
         // ─── Native Background Config Refresh ────────────────────────────────────
 
+        // Push the JS-managed domain allowlist into the same SharedPreferences
+        // the WorkManager worker reads. Called after every successful
+        // `updateVerificationData()` in `domain-verification.ts` so the worker
+        // does not re-fetch the remote list on every wake. 24h TTL is enforced
+        // on the read side (BackgroundConfigWorker.verifyDomain).
+        AsyncFunction("setVerificationData") { data: Map<String, Any?> ->
+            @Suppress("UNCHECKED_CAST")
+            val known    = (data["knownSha256List"]    as? List<String>) ?: emptyList()
+            @Suppress("UNCHECKED_CAST")
+            val verified = (data["verifiedSha256List"] as? List<String>) ?: emptyList()
+            BackgroundConfigWorker.saveDomainVerificationCache(app, known, verified)
+        }
+
         // Register (or update) the WorkManager periodic task.
         AsyncFunction("registerBackgroundConfigRefresh") { url: String, userAgent: String, intervalSeconds: Int, accelerateUrl: String? ->
             app.getSharedPreferences(BG_PREFS_NAME, android.content.Context.MODE_PRIVATE)
@@ -503,7 +516,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
         // Execute config refresh immediately (foreground / dev screen).
         AsyncFunction("executeConfigRefreshNow") { url: String, userAgent: String, accelerateUrl: String?, testPrimaryUrlUnavailable: Boolean? ->
             val acc    = accelerateUrl?.takeIf { it.isNotBlank() }
-            val result = runBlocking { executeRefreshWith(url, acc, userAgent, testPrimaryUrlUnavailable ?: false) }
+            val result = runBlocking { executeRefreshWith(app, url, acc, userAgent, testPrimaryUrlUnavailable ?: false) }
             // Do NOT storeResult here: JS receives the result directly and calls
             // applyResultToSBConfig() itself. Storing would overwrite any pending
             // background doWork() result in SharedPrefs, causing it to be lost.

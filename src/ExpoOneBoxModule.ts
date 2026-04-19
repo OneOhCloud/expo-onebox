@@ -37,7 +37,13 @@ declare class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
   /** Fetch a config URL using DNS resolution + SNI-overriding HTTPS. */
   fetchSubscription(url: string, userAgent: string): Promise<ConfigFetchResult>;
 
-  /** Set verification data (known SHA256 + verified list) for domain validation during fallback. */
+  /**
+   * Push the JS-managed domain allowlist into the native background worker's
+   * shared store. Consumed by the iOS BGTaskScheduler / Android WorkManager
+   * refresh task so it can verify hostnames without re-fetching the remote
+   * list. Timestamp is captured on the native side; cache is honoured for
+   * 24 h before falling back to the built-in list.
+   */
   setVerificationData(data: VerificationData): Promise<void>;
 
   /** Register (or update) the native periodic background config refresh. */
