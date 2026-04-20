@@ -18,6 +18,19 @@ declare class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
   getStartError(): string;
   setCoreLogEnabled(enabled: boolean): void;
   getCoreLogEnabled(): boolean;
+  /**
+   * Filter entries from the sing-box CommandServer log stream at the
+   * earliest native point (before they're serialised into JS events).
+   *
+   * Needed because sing-box's `log.level` in config only filters the
+   * stdout / observable sinks — the platform writer (which feeds this
+   * stream) receives every level unconditionally. See the block comment
+   * in `vpn-context.tsx` for the source pointer.
+   *
+   * Accepts the sing-box level names: trace / debug / info / warn /
+   * error / fatal / panic. Unknown values are coerced to `info`.
+   */
+  setCoreLogLevel(level: string): void;
   getProxyNodes(): Promise<{ all: { tag: string; delay: number }[]; now: string }>;
   selectProxyNode(node: string): Promise<boolean>;
   /** Trigger URLTest for a specific outbound tag or group tag (e.g. "ExitGateway"). */

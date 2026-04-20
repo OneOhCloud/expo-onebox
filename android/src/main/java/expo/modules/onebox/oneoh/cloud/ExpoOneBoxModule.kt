@@ -72,7 +72,13 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
             object : CommandClient.Handler {
                 override fun appendLogs(message: List<LogEntry>) {
                     if (!coreLogEnabled) return
+                    // Filter before IPC: sing-box's platform writer
+                    // bypasses log.level, so every entry arrives here
+                    // regardless of config. See vpn-context.tsx top-of-
+                    // file comment for the source reference.
+                    val max = coreLogLevelMax
                     for (entry in message) {
+                        if (entry.level.toInt() > max) continue
                         try {
                             sendEvent("onLog", mapOf("message" to entry.message))
                         } catch (_: Exception) {}
@@ -132,6 +138,13 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
         var currentStatus: Status = Status.Stopped
         var isStartingUp: Boolean = false
         var coreLogEnabled: Boolean = false
+        /**
+         * Maximum sing-box level code to forward to JS. Codes mirror
+         * `log/level.go`: panic=0, fatal=1, error=2, warn=3, info=4,
+         * debug=5, trace=6. Entries with `level > coreLogLevelMax` are
+         * dropped at `appendLogs`. Default matches the app default.
+         */
+        @Volatile var coreLogLevelMax: Int = 4 // info
         val notification by lazy { application.getSystemService<NotificationManager>()!! }
         val connectivity by lazy { application.getSystemService<ConnectivityManager>()!! }
         val packageManager by lazy { application.packageManager }
@@ -268,6 +281,25 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
 
         Function("getCoreLogEnabled") {
             return@Function coreLogEnabled
+        }
+
+        // Client-side filter for the CommandServer log stream. Needed
+        // because sing-box's `log.level` config only filters stdout
+        // and the observable sink — the platform writer (which feeds
+        // our CommandClient) is unconditional.
+        Function("setCoreLogLevel") { level: String ->
+            val code = when (level.lowercase()) {
+                "panic" -> 0
+                "fatal" -> 1
+                "error" -> 2
+                "warn", "warning" -> 3
+                "info" -> 4
+                "debug" -> 5
+                "trace" -> 6
+                else -> 4
+            }
+            coreLogLevelMax = code
+            sendNativeLog("info", "Module", "core log level filter → $level (code $code)")
         }
 
         // Returns the last startup error written to startup_error.txt by the VPN service.

@@ -64,7 +64,13 @@ class TrafficMonitor: NSObject {
     }
 
     fileprivate func onLogMessage(level: Int32, message: String) {
-        module?.sendLog(message: message)
+        // Client-side filter: sing-box's `log.level` config does not
+        // apply to the platform writer (our IPC source), so we drop
+        // entries above the user-chosen max here before serialising
+        // into a JS event. See ExpoOneBoxModule.coreLogLevelMax.
+        guard let module else { return }
+        if level > module.coreLogLevelMax { return }
+        module.sendLog(message: message)
     }
 
     fileprivate func onGroupUpdate(all: [[String: Any]], now: String) {

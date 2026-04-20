@@ -19,6 +19,11 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
     private var isInitialized = false
     private var statusObserver: NSObjectProtocol?
     internal var coreLogEnabled = false
+    /// Maximum sing-box level code to forward to JS. Codes mirror
+    /// `log/level.go` in the vendored sing-box tree: panic=0, fatal=1,
+    /// error=2, warn=3, info=4, debug=5, trace=6. Entries with
+    /// `level > coreLogLevelMax` are dropped before `sendLog(...)`.
+    internal var coreLogLevelMax: Int32 = 4 // info
 
     public func definition() -> ModuleDefinition {
         Name("ExpoOneBox")
@@ -60,6 +65,26 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
 
         Function("getCoreLogEnabled") {
             return self.coreLogEnabled
+        }
+
+        // Client-side filter for the CommandServer log stream. sing-box's
+        // `log.level` config only filters stdout / observable sinks —
+        // the platform writer feeding us is unconditional.
+        Function("setCoreLogLevel") { (level: String) in
+            let code: Int32
+            switch level.lowercased() {
+            case "panic":   code = 0
+            case "fatal":   code = 1
+            case "error":   code = 2
+            case "warn", "warning": code = 3
+            case "info":    code = 4
+            case "debug":   code = 5
+            case "trace":   code = 6
+            default:        code = 4
+            }
+            self.coreLogLevelMax = code
+            self.sendNativeLog(level: "info", tag: "Module",
+                               message: "core log level filter → \(level) (code \(code))")
         }
 
         AsyncFunction("checkVpnPermission") { () async -> Bool in
