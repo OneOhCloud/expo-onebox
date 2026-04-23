@@ -135,7 +135,8 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
         }
 
         Function("getStartConfig") { () -> String in
-            return self.lastStartConfig
+            if !self.lastStartConfig.isEmpty { return self.lastStartConfig }
+            return self.readLastStartConfig()
         }
 
         // Query the libbox CommandServer (in the Network Extension) for the
@@ -481,6 +482,7 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
         // Rewrite experimental.cache_file.path to the correct absolute path
         let processedConfig = processConfig(config)
         self.lastStartConfig = processedConfig
+        self.writeLastStartConfig(processedConfig)
 
         // Prepare options (same dict the extension receives in startTunnel)
         let options = prepareStartOptions(config: processedConfig)
@@ -598,6 +600,25 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
         let monitor = TrafficMonitor(module: self)
         self.trafficMonitor = monitor
         monitor.connect()
+    }
+
+    // MARK: - Last Start Config File
+
+    private func writeLastStartConfig(_ config: String) {
+        guard let sharedDir = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: Self.appGroupID
+        ) else { return }
+        let filePath = sharedDir.appendingPathComponent("last_start_config.json")
+        try? config.write(to: filePath, atomically: true, encoding: .utf8)
+    }
+
+    private func readLastStartConfig() -> String {
+        guard let sharedDir = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: Self.appGroupID
+        ) else { return "" }
+        let filePath = sharedDir.appendingPathComponent("last_start_config.json")
+        guard FileManager.default.fileExists(atPath: filePath.path) else { return "" }
+        return (try? String(contentsOf: filePath, encoding: .utf8)) ?? ""
     }
 
     // MARK: - Startup Error File

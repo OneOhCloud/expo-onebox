@@ -316,7 +316,11 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
         }
 
         Function("getStartConfig") {
-            return@Function lastStartConfig
+            if (lastStartConfig.isNotEmpty()) return@Function lastStartConfig
+            return@Function try {
+                val file = java.io.File(getWorkingDir(context), "last_start_config.json")
+                if (file.exists()) file.readText().trim() else ""
+            } catch (_: Exception) { "" }
         }
 
         AsyncFunction("checkVpnPermission") {
@@ -387,6 +391,9 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
             sendNativeLog("info", "Tunnel", "start() requested, config bytes=${config.length}")
             val processedConfig = processConfig(config, context)
             lastStartConfig = processedConfig
+            try {
+                java.io.File(getWorkingDir(context), "last_start_config.json").writeText(processedConfig)
+            } catch (_: Exception) {}
 
             // 打印实际传给 VPN 的配置中 inbounds 地址信息，用于排查
             try {
