@@ -60,6 +60,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
     private lateinit var connection: ServiceConnection
     private var vpnPermissionPromise: Promise? = null
     private var batteryOptPromise: Promise? = null
+    private var lastStartConfig: String = ""
 
     // ==================== 日志/流量实时监控 ====================
 
@@ -314,6 +315,10 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
             }
         }
 
+        Function("getStartConfig") {
+            return@Function lastStartConfig
+        }
+
         AsyncFunction("checkVpnPermission") {
             val vpnIntent = VpnService.prepare(context)
             return@AsyncFunction vpnIntent == null
@@ -381,6 +386,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
         AsyncFunction("start") { config: String ->
             sendNativeLog("info", "Tunnel", "start() requested, config bytes=${config.length}")
             val processedConfig = processConfig(config, context)
+            lastStartConfig = processedConfig
 
             // 打印实际传给 VPN 的配置中 inbounds 地址信息，用于排查
             try {

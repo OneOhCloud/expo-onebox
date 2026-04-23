@@ -16,6 +16,7 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
     /// Set to true when user initiates start, cleared on connected or disconnected.
     /// Used to detect startup failures even when NEVPNStatus goes connecting→disconnecting→disconnected.
     private var isStartingUp: Bool = false
+    private var lastStartConfig: String = ""
     private var isInitialized = false
     private var statusObserver: NSObjectProtocol?
     internal var coreLogEnabled = false
@@ -131,6 +132,10 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
         // JS layer calls this when status transitions STARTING → STOPPED.
         Function("getStartError") { () -> String in
             return self.readStartupError()
+        }
+
+        Function("getStartConfig") { () -> String in
+            return self.lastStartConfig
         }
 
         // Query the libbox CommandServer (in the Network Extension) for the
@@ -475,6 +480,7 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
 
         // Rewrite experimental.cache_file.path to the correct absolute path
         let processedConfig = processConfig(config)
+        self.lastStartConfig = processedConfig
 
         // Prepare options (same dict the extension receives in startTunnel)
         let options = prepareStartOptions(config: processedConfig)

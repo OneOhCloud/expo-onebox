@@ -16,6 +16,8 @@ declare class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
   getStatus(): number;
   /** Sync read of the last startup error written by the Extension/Service. Empty = no error. */
   getStartError(): string;
+  /** Returns the config JSON string last passed to start(), after native processing. Empty string if never started. */
+  getStartConfig(): string;
   setCoreLogEnabled(enabled: boolean): void;
   getCoreLogEnabled(): boolean;
   /**

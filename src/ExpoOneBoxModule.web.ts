@@ -58,6 +58,7 @@ function formatBytesTotal(bytes: number): string {
 class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
   private _status: number = VPN_STATUS.STOPPED;
   private _coreLogEnabled: boolean = false;
+  private _lastStartConfig: string = '';
   private _currentNode: string = 'auto';
   private _trafficTimer: ReturnType<typeof setInterval> | null = null;
   private _uplinkTotal: number = 0;
@@ -76,6 +77,7 @@ class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
   }
 
   async start(config: string): Promise<void> {
+    this._lastStartConfig = config;
     console.log('[Web Mock] VPN start called with config:', config);
 
     this._status = VPN_STATUS.STARTING;
@@ -161,6 +163,10 @@ class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
 
   getStartError(): string {
     return '';
+  }
+
+  getStartConfig(): string {
+    return this._lastStartConfig;
   }
 
   setCoreLogEnabled(enabled: boolean): void {
