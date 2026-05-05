@@ -252,15 +252,19 @@ class ExtensionPlatformInterface: NSObject, LibboxPlatformInterfaceProtocol, Lib
         let monitor = NWPathMonitor()
         nwMonitor = monitor
         let semaphore = DispatchSemaphore(value: 0)
+        var signaled = false
         monitor.pathUpdateHandler = { path in
             self.onUpdateDefaultInterface(listener, path)
-            semaphore.signal()
-            monitor.pathUpdateHandler = { path in
-                self.onUpdateDefaultInterface(listener, path)
+            if !signaled && (path.status == .unsatisfied || !path.availableInterfaces.isEmpty) {
+                signaled = true
+                semaphore.signal()
+                monitor.pathUpdateHandler = { path in
+                    self.onUpdateDefaultInterface(listener, path)
+                }
             }
         }
         monitor.start(queue: DispatchQueue.global())
-        semaphore.wait()
+        semaphore.wait(timeout: .now() + 5)
     }
 
     private func onUpdateDefaultInterface(_ listener: LibboxInterfaceUpdateListenerProtocol, _ path: Network.NWPath) {

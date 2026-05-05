@@ -14,7 +14,7 @@ import java.net.NetworkInterface
 object DefaultNetworkMonitor {
 
     var defaultNetwork: Network? = null
-    private var listener: InterfaceUpdateListener? = null
+    @Volatile private var listener: InterfaceUpdateListener? = null
 
     suspend fun start() {
         DefaultNetworkListener.start(this) {
@@ -49,19 +49,30 @@ object DefaultNetworkMonitor {
         val listener = listener ?: return
         if (newNetwork != null) {
             val interfaceName =
-                (connectivity.getLinkProperties(newNetwork) ?: return).interfaceName
+                (connectivity.getLinkProperties(newNetwork) ?: return).interfaceName ?: return
             for (times in 0 until 10) {
-                var interfaceIndex: Int
+                val interfaceIndex: Int
                 try {
                     interfaceIndex = NetworkInterface.getByName(interfaceName).index
                 } catch (e: Exception) {
                     Thread.sleep(100)
                     continue
                 }
-                listener.updateDefaultInterface(interfaceName, interfaceIndex, false, false)
+                if (this.listener !== listener) return
+                try {
+                    listener.updateDefaultInterface(interfaceName, interfaceIndex, false, false)
+                } catch (e: Exception) {
+                    return
+                }
+                break
             }
         } else {
-            listener.updateDefaultInterface("", -1, false, false)
+            if (this.listener !== listener) return
+            try {
+                listener.updateDefaultInterface("", -1, false, false)
+            } catch (e: Exception) {
+                return
+            }
         }
     }
 }
