@@ -13,6 +13,8 @@ declare class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
   checkBatteryOptimizationExemption(): boolean;
   /** Android only: shows the system dialog to request battery optimization exemption. Resolves with the final exemption state after the user dismisses the dialog. */
   requestBatteryOptimizationExemption(): Promise<boolean>;
+  /** Android only: intentionally crash the native process for Bugsnag verification. */
+  crashForBugsnagTest(): boolean;
   getStatus(): number;
   /** Sync read of the last startup error written by the Extension/Service. Empty = no error. */
   getStartError(): string;

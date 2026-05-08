@@ -224,6 +224,10 @@ class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
     return true;
   }
 
+  crashForBugsnagTest(): boolean {
+    throw new Error('Bugsnag native crash test is Android-only.');
+  }
+
   async copy2CacheDbPath(_sourceUri: string): Promise<boolean> {
     return true;
   }

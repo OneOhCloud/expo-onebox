@@ -8,6 +8,8 @@ import android.content.Intent
 import android.net.ConnectivityManager
 import android.net.VpnService
 import android.net.wifi.WifiManager
+import android.os.Handler
+import android.os.Looper
 import android.os.PowerManager
 import android.util.Log
 import androidx.core.content.ContextCompat
@@ -276,6 +278,14 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
                 // 查询失败时返回当前缓存的状态
                 currentStatus.ordinal
             }
+        }
+
+        Function("crashForBugsnagTest") {
+            Log.e(TAG, "Triggering intentional native crash for Bugsnag verification")
+            Handler(Looper.getMainLooper()).post {
+                throw RuntimeException("Bugsnag Android native crash test")
+            }
+            true
         }
 
         Function("setCoreLogEnabled") { enabled: Boolean ->
