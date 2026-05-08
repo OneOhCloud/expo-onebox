@@ -746,10 +746,11 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
         ])
     }
 
-    internal func sendGroupUpdate(all: [[String: Any]], now: String) {
+    internal func sendGroupUpdate(all: [[String: Any]], now: String, autoNow: String) {
         sendEvent("onGroupUpdate", [
             "all": all,
-            "now": now
+            "now": now,
+            "autoNow": autoNow,
         ])
     }
 

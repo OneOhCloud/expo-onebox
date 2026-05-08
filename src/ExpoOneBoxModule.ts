@@ -33,7 +33,7 @@ declare class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
    * error / fatal / panic. Unknown values are coerced to `info`.
    */
   setCoreLogLevel(level: string): void;
-  getProxyNodes(): Promise<{ all: { tag: string; delay: number }[]; now: string }>;
+  getProxyNodes(): Promise<{ all: { tag: string; delay: number }[]; now: string; autoNow?: string }>;
   selectProxyNode(node: string): Promise<boolean>;
   /** Trigger URLTest for a specific outbound tag or group tag (e.g. "ExitGateway"). */
   triggerURLTest(tag: string): Promise<boolean>;

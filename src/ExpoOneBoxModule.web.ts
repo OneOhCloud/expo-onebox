@@ -178,13 +178,17 @@ class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
     return this._coreLogEnabled;
   }
 
-  async getProxyNodes(): Promise<{ all: { tag: string; delay: number }[]; now: string }> {
-    return { all: buildMockNodes(), now: this._currentNode };
+  async getProxyNodes(): Promise<{ all: { tag: string; delay: number }[]; now: string; autoNow?: string }> {
+    return { all: buildMockNodes(), now: this._currentNode, autoNow: this._currentNode === 'auto' ? 'hk-01' : this._currentNode };
   }
 
   async triggerURLTest(_tag: string): Promise<boolean> {
     setTimeout(() => {
-      this.emit('onGroupUpdate', { all: buildMockNodes(), now: this._currentNode });
+      this.emit('onGroupUpdate', {
+        all: buildMockNodes(),
+        now: this._currentNode,
+        autoNow: this._currentNode === 'auto' ? 'hk-01' : this._currentNode,
+      });
     }, 200);
     return true;
   }
@@ -194,7 +198,11 @@ class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
     const exists = MOCK_PROXY_NODE_TAGS.includes(node);
     if (exists) {
       this._currentNode = node;
-      this.emit('onGroupUpdate', { all: buildMockNodes(), now: this._currentNode });
+      this.emit('onGroupUpdate', {
+        all: buildMockNodes(),
+        now: this._currentNode,
+        autoNow: this._currentNode === 'auto' ? 'hk-01' : this._currentNode,
+      });
     }
     return exists;
   }

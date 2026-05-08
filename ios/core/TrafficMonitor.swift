@@ -73,8 +73,8 @@ class TrafficMonitor: NSObject {
         module.sendLog(message: message)
     }
 
-    fileprivate func onGroupUpdate(all: [[String: Any]], now: String) {
-        module?.sendGroupUpdate(all: all, now: now)
+    fileprivate func onGroupUpdate(all: [[String: Any]], now: String, autoNow: String) {
+        module?.sendGroupUpdate(all: all, now: now, autoNow: autoNow)
     }
 
     private func logLevelName(_ level: Int32) -> String {
@@ -135,6 +135,7 @@ private class ClientHandler: NSObject, LibboxCommandClientHandlerProtocol {
         guard let message, let monitor else { return }
         var all: [[String: Any]] = []
         var now = ""
+        var autoNow = ""
         while let group = message.next() {
             if group.tag == "ExitGateway" {
                 now = group.selected
@@ -143,10 +144,13 @@ private class ClientHandler: NSObject, LibboxCommandClientHandlerProtocol {
                         all.append(["tag": item.tag, "delay": Int(item.urlTestDelay)])
                     }
                 }
-                break
+                continue
+            }
+            if group.tag == "auto" {
+                autoNow = group.selected
             }
         }
-        monitor.onGroupUpdate(all: all, now: now)
+        monitor.onGroupUpdate(all: all, now: now, autoNow: autoNow)
     }
 
     func initializeClashMode(_ modeList: (any LibboxStringIteratorProtocol)?, currentMode: String?) {

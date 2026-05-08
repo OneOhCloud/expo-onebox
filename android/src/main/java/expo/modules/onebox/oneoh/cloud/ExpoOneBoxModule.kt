@@ -111,6 +111,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
                     try {
                         val all = mutableListOf<Map<String, Any>>()
                         var now = ""
+                        var autoNow = ""
                         for (group in newGroups) {
                             if (group.tag == "ExitGateway") {
                                 now = group.selected ?: ""
@@ -119,10 +120,13 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
                                     val item = items.next()
                                     all.add(mapOf("tag" to item.tag, "delay" to item.urlTestDelay.toInt()))
                                 }
-                                break
+                                continue
+                            }
+                            if (group.tag == "auto") {
+                                autoNow = group.selected ?: ""
                             }
                         }
-                        sendEvent("onGroupUpdate", mapOf("all" to all, "now" to now))
+                        sendEvent("onGroupUpdate", mapOf("all" to all, "now" to now, "autoNow" to autoNow))
                     } catch (_: Exception) {}
                 }
             }
@@ -439,23 +443,24 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
             options.addCommand(Libbox.CommandGroup)
 
             val handler = object : CommandClientHandler {
-                private fun settle(all: List<Map<String, Any>>, now: String) {
+                private fun settle(all: List<Map<String, Any>>, now: String, autoNow: String) {
                     if (!settled) {
                         settled = true
                         rawClient?.runCatching { disconnect() }
-                        promise.resolve(mapOf("all" to all, "now" to now))
+                        promise.resolve(mapOf("all" to all, "now" to now, "autoNow" to autoNow))
                     }
                 }
 
                 override fun connected() {}
 
                 override fun disconnected(message: String?) {
-                    settle(emptyList(), "")
+                    settle(emptyList(), "", "")
                 }
 
                 override fun writeGroups(message: OutboundGroupIterator?) {
                     val all = mutableListOf<Map<String, Any>>()
                     var now = ""
+                    var autoNow = ""
                     while (message?.hasNext() == true) {
                         val group = message.next()
                         if (group.tag == "ExitGateway") {
@@ -465,10 +470,13 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
                                 val item = items.next()
                                 all.add(mapOf("tag" to item.tag, "delay" to item.urlTestDelay.toInt()))
                             }
-                            break
+                            continue
+                        }
+                        if (group.tag == "auto") {
+                            autoNow = group.selected ?: ""
                         }
                     }
-                    settle(all, now)
+                    settle(all, now, autoNow)
                 }
 
                 override fun writeStatus(message: StatusMessage?) {}
@@ -488,7 +496,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
                 if (!settled) {
                     settled = true
                     client.runCatching { disconnect() }
-                    promise.resolve(mapOf("all" to emptyList<Map<String, Any>>(), "now" to ""))
+                    promise.resolve(mapOf("all" to emptyList<Map<String, Any>>(), "now" to "", "autoNow" to ""))
                 }
             }, 5000)
 
@@ -499,7 +507,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
                 } catch (e: Exception) {
                     if (!settled) {
                         settled = true
-                        promise.resolve(mapOf("all" to emptyList<Map<String, Any>>(), "now" to ""))
+                        promise.resolve(mapOf("all" to emptyList<Map<String, Any>>(), "now" to "", "autoNow" to ""))
                     }
                 }
             }.start()

@@ -69,6 +69,8 @@ export type GroupUpdateEventPayload = {
   all: { tag: string; delay: number }[];
   /** 当前选中的节点 tag */
   now: string;
+  /** urltest(auto) 组当前选中的真实节点 tag（为空表示未知/暂未产出） */
+  autoNow?: string;
 };
 
 export type OnLoadEventPayload = {

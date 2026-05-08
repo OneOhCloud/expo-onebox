@@ -38,17 +38,18 @@ class OneShotGroupQueryHandler: NSObject, LibboxCommandClientHandlerProtocol, @u
     }
 
     func fail(_ error: Error) { settle(.failure(error)) }
-    func timeout() { settle(.success(["all": [] as [[String: Any]], "now": ""])) }
+    func timeout() { settle(.success(["all": [] as [[String: Any]], "now": "", "autoNow": ""])) }
 
     func connected() {}
     func disconnected(_ message: String?) {
-        settle(.success(["all": [] as [[String: Any]], "now": ""]))
+        settle(.success(["all": [] as [[String: Any]], "now": "", "autoNow": ""]))
     }
 
     func writeGroups(_ message: (any LibboxOutboundGroupIteratorProtocol)?) {
         guard let message else { return }
         var all: [[String: Any]] = []
         var now = ""
+        var autoNow = ""
         while let group = message.next() {
             if group.tag == "ExitGateway" {
                 now = group.selected
@@ -57,10 +58,13 @@ class OneShotGroupQueryHandler: NSObject, LibboxCommandClientHandlerProtocol, @u
                         all.append(["tag": item.tag, "delay": Int(item.urlTestDelay)])
                     }
                 }
-                break
+                continue
+            }
+            if group.tag == "auto" {
+                autoNow = group.selected
             }
         }
-        settle(.success(["all": all, "now": now]))
+        settle(.success(["all": all, "now": now, "autoNow": autoNow]))
     }
 
     // Unused callbacks — libbox runtime checks respondsToSelector before calling
