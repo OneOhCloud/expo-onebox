@@ -1,6 +1,7 @@
 package expo.modules.onebox.oneoh.cloud.helper
 
 import android.content.Context
+import android.database.sqlite.SQLiteDatabase
 import android.util.Log
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
@@ -11,11 +12,14 @@ import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.google.gson.Gson
+import java.io.File
 import java.time.Instant
 import java.util.concurrent.TimeUnit
 
 private const val TAG = "BackgroundConfigWorker"
 internal const val BG_PREFS_NAME = "expo_onebox_background_config"
+private const val JS_KV_TEST_PRIMARY_UNAVAILABLE_KEY = "dev:test-primary-url-unavailable"
+private const val JS_KV_ACCELERATE_URL_KEY = "config:accelerate-url"
 private val gson = Gson()
 
 // MARK: - Result model
@@ -167,7 +171,6 @@ class BackgroundConfigWorker(
         val prefs = applicationContext.getSharedPreferences(BG_PREFS_NAME, Context.MODE_PRIVATE)
         val url          = prefs.getString("config_url", null)
         val userAgent    = prefs.getString("user_agent", "") ?: ""
-        val accelerateUrl = prefs.getString("accelerate_url", null)
 
         Log.i(TAG, "doWork invoked, hasUrl=${!url.isNullOrEmpty()}, runAttempt=$runAttemptCount")
 
@@ -176,7 +179,7 @@ class BackgroundConfigWorker(
             return Result.success()
         }
 
-        val result = executeRefreshWith(applicationContext, url, accelerateUrl, userAgent)
+        val result = executeRefreshWith(applicationContext, url, userAgent)
         storeResult(applicationContext, result)
         return if (result.status == "success") Result.success() else Result.retry()
     }
@@ -267,23 +270,143 @@ private fun buildAcceleratedUrl(originalUrl: String, accelerateBase: String): St
     return "$accelerateBase/$hashHex$pathAndQuery"
 }
 
+private fun throwPrimaryUnavailableForTest(): Nothing {
+    throw IllegalStateException("TEST MODE: primary URL unavailable")
+}
+
+private fun summarizeAccelerateUrl(value: String?): String {
+    if (value.isNullOrBlank()) return "empty"
+    val trimmed = value.trim()
+    val host = runCatching { android.net.Uri.parse(trimmed).host }.getOrNull()
+    return if (!host.isNullOrBlank()) "set(host=$host,len=${trimmed.length})"
+    else "set(unparseable,len=${trimmed.length})"
+}
+
+private fun summarizeKvValue(key: String, value: String?): String {
+    return when (key) {
+        JS_KV_TEST_PRIMARY_UNAVAILABLE_KEY -> (if (value == "true") "true" else "false-or-empty")
+        JS_KV_ACCELERATE_URL_KEY -> summarizeAccelerateUrl(value)
+        else -> if (value.isNullOrEmpty()) "empty" else "set(len=${value.length})"
+    }
+}
+
+private fun getJsKvValue(context: Context, key: String): String? {
+    val dbFile = File(File(context.filesDir, "SQLite"), "config.db")
+    if (!dbFile.exists()) {
+        Log.w(TAG, "[CONFIG_LOAD] kv_store数据库不存在: ${dbFile.absolutePath}, key=$key")
+        return null
+    }
+
+    var db: SQLiteDatabase? = null
+    return try {
+        db = SQLiteDatabase.openDatabase(dbFile.absolutePath, null, SQLiteDatabase.OPEN_READONLY)
+        db.rawQuery(
+            "SELECT value FROM kv_store WHERE key = ? LIMIT 1",
+            arrayOf(key),
+        ).use { cursor ->
+            if (!cursor.moveToFirst()) {
+                Log.i(TAG, "[CONFIG_LOAD] kv_store未命中: key=$key")
+                return null
+            }
+            val value = cursor.getString(0)
+            Log.i(TAG, "[CONFIG_LOAD] kv_store命中: key=$key, value=${summarizeKvValue(key, value)}")
+            value
+        }
+    } catch (e: Exception) {
+        Log.w(TAG, "[CONFIG_LOAD] 读取kv_store失败(key=$key): ${e.message}")
+        null
+    } finally {
+        db?.close()
+    }
+}
+
+private fun isTestPrimaryUrlUnavailableEnabled(context: Context): Boolean {
+    return getJsKvValue(context, JS_KV_TEST_PRIMARY_UNAVAILABLE_KEY) == "true"
+}
+
+private fun readAccelerateUrlFromKv(context: Context): String? {
+    val value = getJsKvValue(context, JS_KV_ACCELERATE_URL_KEY)?.trim()
+    return value?.takeIf { it.isNotEmpty() }
+}
+
+// MARK: - Shared fetch executor (foreground native fetchSubscription)
+
+/**
+ * Native fetchSubscription path with optional accelerator fallback.
+ *
+ * Rules match executeRefreshWith:
+ *   1. Try primary URL first
+ *   2. Only network exceptions trigger fallback (HTTP non-2xx does not)
+ *   3. Fallback requires verified domain + configured accelerateUrl (from kv_store)
+ *
+ * When `kv_store["dev:test-primary-url-unavailable"] == "true"`, primary
+ * request actively throws to simulate network failure for fallback testing.
+ */
+internal suspend fun fetchSubscriptionWithFallback(
+    context: Context,
+    url: String,
+    userAgent: String,
+): ConfigFetchResult {
+    val host      = android.net.Uri.parse(url).host ?: ""
+    val domainSha = sha256Hex(host)
+    val verified  = verifyDomain(host, context)
+    if (!verified) {
+        Log.w(TAG, "[CONFIG_LOAD] 域名未验证: SHA256=$domainSha, 加速备用已禁用")
+    }
+    val testPrimaryUnavailable = isTestPrimaryUrlUnavailableEnabled(context)
+    val accelerateUrl = readAccelerateUrlFromKv(context)
+    Log.i(
+        TAG,
+        "[CONFIG_LOAD] 请求前开关状态(fetchSubscription): testPrimaryUnavailable=$testPrimaryUnavailable, accelerate=${summarizeAccelerateUrl(accelerateUrl)}",
+    )
+
+    val primaryError: String = try {
+        if (testPrimaryUnavailable) {
+            Log.w(TAG, "[CONFIG_LOAD] 测试模式: 主URL主动抛出异常")
+            throwPrimaryUnavailableForTest()
+        }
+        val primary = fetchConfig(url, userAgent)
+        // HTTP errors do not trigger fallback.
+        if (primary.statusCode !in 200..299) return primary
+        return primary
+    } catch (primaryEx: Exception) {
+        val err = primaryEx.message ?: "Unknown error"
+        Log.w(TAG, "[CONFIG_LOAD] 主URL异常: $err, 检查回落条件")
+        err
+    }
+
+    if (!verified) {
+        throw IllegalStateException(primaryError)
+    }
+    if (accelerateUrl.isNullOrBlank()) {
+        throw IllegalStateException(primaryError)
+    }
+
+    val accUrl = buildAcceleratedUrl(url, accelerateUrl)
+    Log.i(TAG, "[CONFIG_LOAD] 主URL失败, 尝试加速回落: $accUrl, 原因: $primaryError")
+    return try {
+        fetchConfig(accUrl, userAgent)
+    } catch (accEx: Exception) {
+        val accError = accEx.message ?: "Unknown error"
+        throw IllegalStateException("primary=$primaryError accelerated=$accError")
+    }
+}
+
 // MARK: - Shared refresh executor (foreground + background)
 
 /**
- * Fetch [url] with fallback to [accelerateUrl].
+ * Fetch [url] with fallback to accelerate URL from `kv_store`.
  * Core logic (unified):
  *   1. Try [url] (primary)
  *   2. If fails (network exception) and domain verified → try accelerated URL
  *   3. Return result with method info
  * HTTP errors (non-2xx) do NOT trigger fallback.
- * Test mode: simulates primary URL unavailable to test fallback path.
+ * Test mode: actively throws on primary URL to test fallback path.
  */
 internal suspend fun executeRefreshWith(
     context: Context,
     url: String,
-    accelerateUrl: String?,
     userAgent: String,
-    testPrimaryUrlUnavailable: Boolean = false,
 ): ConfigRefreshResult {
     val start     = System.currentTimeMillis()
     val timestamp = Instant.now().toString()
@@ -295,53 +418,57 @@ internal suspend fun executeRefreshWith(
     if (!verified) {
         Log.w(TAG, "[CONFIG_LOAD] 域名未验证: SHA256=$domainSha, 加速备用已禁用")
     }
+    val testPrimaryUnavailable = isTestPrimaryUrlUnavailableEnabled(context)
+    val accelerateUrl = readAccelerateUrlFromKv(context)
+    Log.i(
+        TAG,
+        "[CONFIG_LOAD] 请求前开关状态(executeRefresh): testPrimaryUnavailable=$testPrimaryUnavailable, accelerate=${summarizeAccelerateUrl(accelerateUrl)}",
+    )
 
     // ── Try primary URL first ────────────────────────────────────────────────
-    val primaryError: String = if (testPrimaryUrlUnavailable) {
-        // Test mode: simulate primary URL unavailable to trigger fallback path
-        Log.w(TAG, "[CONFIG_LOAD] 测试模式: 跳过主URL直接尝试加速回落")
-        "TEST MODE: primary URL unavailable"
-    } else {
-        try {
-            val fetchResult = fetchConfig(url, userAgent)
-            val durationMs  = System.currentTimeMillis() - start
-
-            if (fetchResult.statusCode < 200 || fetchResult.statusCode >= 300) {
-                // HTTP error — do not fall back, return error
-                Log.w(TAG, "[CONFIG_LOAD] 主URL返回HTTP ${fetchResult.statusCode}, 不触发回落")
-                return ConfigRefreshResult(
-                    status    = "failed",
-                    error     = "HTTP ${fetchResult.statusCode}",
-                    timestamp = timestamp,
-                    durationMs = durationMs,
-                    method    = "primary",
-                )
-            }
-
-            val headerValue = fetchResult.headers["subscription-userinfo"]
-            val info = parseUserinfo(headerValue)
-            Log.i(TAG, "[CONFIG_LOAD] 主URL成功: 上传=${info.upload}, 下载=${info.download}, 总计=${info.total}, 过期=${info.expire}")
-            return ConfigRefreshResult(
-                status             = "success",
-                content            = fetchResult.body,
-                subscriptionUpload   = info.upload,
-                subscriptionDownload = info.download,
-                subscriptionTotal    = info.total,
-                subscriptionExpire   = info.expire,
-                timestamp          = timestamp,
-                durationMs         = durationMs,
-                subscriptionUserinfoHeader = headerValue,
-                method             = "primary",
-            )
-        } catch (primaryEx: Exception) {
-            val err = primaryEx.message ?: "Unknown error"
-            Log.w(TAG, "[CONFIG_LOAD] 主URL异常: $err, 检查回落条件")
-            err
+    val primaryError: String = try {
+        if (testPrimaryUnavailable) {
+            Log.w(TAG, "[CONFIG_LOAD] 测试模式: 主URL主动抛出异常")
+            throwPrimaryUnavailableForTest()
         }
+        val fetchResult = fetchConfig(url, userAgent)
+        val durationMs  = System.currentTimeMillis() - start
+
+        if (fetchResult.statusCode < 200 || fetchResult.statusCode >= 300) {
+            // HTTP error — do not fall back, return error
+            Log.w(TAG, "[CONFIG_LOAD] 主URL返回HTTP ${fetchResult.statusCode}, 不触发回落")
+            return ConfigRefreshResult(
+                status    = "failed",
+                error     = "HTTP ${fetchResult.statusCode}",
+                timestamp = timestamp,
+                durationMs = durationMs,
+                method    = "primary",
+            )
+        }
+
+        val headerValue = fetchResult.headers["subscription-userinfo"]
+        val info = parseUserinfo(headerValue)
+        Log.i(TAG, "[CONFIG_LOAD] 主URL成功: 上传=${info.upload}, 下载=${info.download}, 总计=${info.total}, 过期=${info.expire}")
+        return ConfigRefreshResult(
+            status             = "success",
+            content            = fetchResult.body,
+            subscriptionUpload   = info.upload,
+            subscriptionDownload = info.download,
+            subscriptionTotal    = info.total,
+            subscriptionExpire   = info.expire,
+            timestamp          = timestamp,
+            durationMs         = durationMs,
+            subscriptionUserinfoHeader = headerValue,
+            method             = "primary",
+        )
+    } catch (primaryEx: Exception) {
+        val err = primaryEx.message ?: "Unknown error"
+        Log.w(TAG, "[CONFIG_LOAD] 主URL异常: $err, 检查回落条件")
+        err
     }
 
     // ── Try accelerated URL (verified domains only) ───────────────────────
-    // This code executes when either testPrimaryUrlUnavailable=true or primary fetch failed
+    // This code executes when either test mode is enabled or primary fetch failed
     if (!verified) {
         val durationMs = System.currentTimeMillis() - start
         Log.w(TAG, "[CONFIG_LOAD] 回落被禁用: 域名未验证 (SHA256=$domainSha), 主URL原因: $primaryError")

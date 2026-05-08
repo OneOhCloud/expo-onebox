@@ -220,15 +220,13 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
 
         // ─── Config Fetching (DNS-resolved) ─────────────────────────────────────
 
-        // Fetch a config URL using the best DNS server for resolution.
-        // Resolves the hostname via a raw UDP A-record query, then makes HTTPS request
-        // to the resolved IP with TLS SNI override for the original hostname.
+        // Fetch a config URL with DNS-resolved primary + optional accelerator fallback.
+        // Accelerator URL is loaded by native from kv_store.
         AsyncFunction("fetchSubscription") { (url: String, userAgent: String) async throws -> [String: Any] in
-            guard let parsedURL = URL(string: url) else {
-                throw NSError(domain: "ExpoOneBox", code: -1,
-                              userInfo: [NSLocalizedDescriptionKey: "Malformed URL: \(url)"])
-            }
-            let result = try await ConfigFetcher.fetch(url: parsedURL, userAgent: userAgent)
+            let result = try await BackgroundConfigRefresh.fetchSubscriptionWithFallback(
+                url: url,
+                userAgent: userAgent
+            )
             return [
                 "statusCode": result.statusCode,
                 "headers": result.headers,
@@ -252,10 +250,10 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
         // Register (or update) the native background config refresh task.
         // Persists URL, userAgent, and interval to AppGroup UserDefaults, then
         // submits a BGAppRefreshTaskRequest so iOS wakes the app periodically.
-        AsyncFunction("registerBackgroundConfigRefresh") { (url: String, userAgent: String, intervalSeconds: Int, accelerateUrl: String?) async in
-            BackgroundConfigRefresh.saveConfig(url: url, userAgent: userAgent, intervalSeconds: intervalSeconds, accelerateUrl: accelerateUrl)
+        AsyncFunction("registerBackgroundConfigRefresh") { (url: String, userAgent: String, intervalSeconds: Int) async in
+            BackgroundConfigRefresh.saveConfig(url: url, userAgent: userAgent, intervalSeconds: intervalSeconds)
             BackgroundConfigRefresh.scheduleNextRefresh()
-            NSLog("[ExpoOneBox] Background config refresh registered (interval=\(intervalSeconds)s, accelerate=\(accelerateUrl != nil))")
+            NSLog("[ExpoOneBox] Background config refresh registered (interval=\(intervalSeconds)s)")
         }
 
         // Cancel the scheduled background refresh and clear the registered flag.
@@ -265,8 +263,8 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
 
         // Execute a config refresh immediately (used from foreground / dev screen).
         // Uses the same DNS-resolved fetcher as the background task, with accelerator fallback.
-        AsyncFunction("executeConfigRefreshNow") { (url: String, userAgent: String, accelerateUrl: String?, testPrimaryUrlUnavailable: Bool?) async -> [String: Any] in
-            let result = await BackgroundConfigRefresh.executeRefreshWith(url: url, accelerateUrl: accelerateUrl, userAgent: userAgent, testPrimaryUrlUnavailable: testPrimaryUrlUnavailable ?? false)
+        AsyncFunction("executeConfigRefreshNow") { (url: String, userAgent: String) async -> [String: Any] in
+            let result = await BackgroundConfigRefresh.executeRefreshWith(url: url, userAgent: userAgent)
             BackgroundConfigRefresh.storeResult(result)
             return result.toDictionary()
         }

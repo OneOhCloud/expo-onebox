@@ -244,13 +244,13 @@ class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
     console.log('[Web Mock] setVerificationData');
   }
 
-  async registerBackgroundConfigRefresh(_url: string, _userAgent: string, _intervalSeconds: number, _accelerateUrl: string | null): Promise<void> {
+  async registerBackgroundConfigRefresh(_url: string, _userAgent: string, _intervalSeconds: number): Promise<void> {
     console.log('[Web Mock] registerBackgroundConfigRefresh');
   }
 
   async unregisterBackgroundConfigRefresh(): Promise<void> {}
 
-  async executeConfigRefreshNow(url: string, _userAgent: string, _accelerateUrl: string | null, _testPrimaryUrlUnavailable?: boolean) {
+  async executeConfigRefreshNow(url: string, _userAgent: string) {
     const body = buildMockConfigBody(url);
     const header = buildMockUserinfoHeader();
     const info = {

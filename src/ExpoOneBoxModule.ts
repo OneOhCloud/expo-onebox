@@ -49,8 +49,11 @@ declare class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
    */
   copy2CacheDbPath(sourceUri: string): Promise<boolean>;
 
-  /** Fetch a config URL using DNS resolution + SNI-overriding HTTPS. */
-  fetchSubscription(url: string, userAgent: string): Promise<ConfigFetchResult>;
+  /** Fetch a config URL using DNS resolution + SNI-overriding HTTPS, with optional accelerator fallback. */
+  fetchSubscription(
+    url: string,
+    userAgent: string,
+  ): Promise<ConfigFetchResult>;
 
   /**
    * Push the JS-managed domain allowlist into the native background worker's
@@ -62,13 +65,13 @@ declare class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
   setVerificationData(data: VerificationData): Promise<void>;
 
   /** Register (or update) the native periodic background config refresh. */
-  registerBackgroundConfigRefresh(url: string, userAgent: string, intervalSeconds: number, accelerateUrl: string | null): Promise<void>;
+  registerBackgroundConfigRefresh(url: string, userAgent: string, intervalSeconds: number): Promise<void>;
 
   /** Cancel the scheduled background config refresh. */
   unregisterBackgroundConfigRefresh(): Promise<void>;
 
   /** Execute a config refresh immediately (returns result synchronously to JS). */
-  executeConfigRefreshNow(url: string, userAgent: string, accelerateUrl: string | null, testPrimaryUrlUnavailable?: boolean): Promise<ConfigRefreshResult>;
+  executeConfigRefreshNow(url: string, userAgent: string): Promise<ConfigRefreshResult>;
 
   /**
    * Return and clear the last result stored by the native background task.

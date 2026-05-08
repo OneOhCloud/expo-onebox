@@ -23,11 +23,10 @@ import expo.modules.onebox.oneoh.cloud.helper.BackgroundConfigWorker
 import expo.modules.onebox.oneoh.cloud.helper.BG_PREFS_NAME
 import expo.modules.onebox.oneoh.cloud.helper.Bugs
 import expo.modules.onebox.oneoh.cloud.helper.Status
-import expo.modules.onebox.oneoh.cloud.helper.fetchConfig
+import expo.modules.onebox.oneoh.cloud.helper.fetchSubscriptionWithFallback
 import expo.modules.onebox.oneoh.cloud.helper.findBestDnsServer
 import expo.modules.onebox.oneoh.cloud.helper.getWorkingDir
 import expo.modules.onebox.oneoh.cloud.helper.executeRefreshWith
-import expo.modules.onebox.oneoh.cloud.helper.parseUserinfo
 import expo.modules.onebox.oneoh.cloud.helper.processConfig
 import io.nekohasekai.libbox.CommandClientHandler
 import io.nekohasekai.libbox.CommandClientOptions
@@ -551,9 +550,16 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
 
         // ─── Config Fetching (DNS-resolved) ─────────────────────────────────────
 
-        // Fetch a config URL using DNS resolution + OkHttp with SNI override.
+        // Fetch a config URL using DNS resolution + optional accelerator fallback.
+        // Accelerator URL is loaded by native from kv_store.
         AsyncFunction("fetchSubscription") { url: String, userAgent: String ->
-            val result = runBlocking { fetchConfig(url, userAgent) }
+            val result = runBlocking {
+                fetchSubscriptionWithFallback(
+                    app,
+                    url,
+                    userAgent,
+                )
+            }
             mapOf(
                 "statusCode" to result.statusCode,
                 "headers" to result.headers,
@@ -577,20 +583,15 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
         }
 
         // Register (or update) the WorkManager periodic task.
-        AsyncFunction("registerBackgroundConfigRefresh") { url: String, userAgent: String, intervalSeconds: Int, accelerateUrl: String? ->
+        AsyncFunction("registerBackgroundConfigRefresh") { url: String, userAgent: String, intervalSeconds: Int ->
             app.getSharedPreferences(BG_PREFS_NAME, android.content.Context.MODE_PRIVATE)
                 .edit()
                 .putString("config_url", url)
                 .putString("user_agent", userAgent)
                 .putLong("interval_seconds", intervalSeconds.toLong())
-                .also { ed ->
-                    val acc = accelerateUrl?.takeIf { it.isNotBlank() }
-                    if (acc != null) ed.putString("accelerate_url", acc)
-                    else ed.remove("accelerate_url")
-                }
                 .apply()
             BackgroundConfigWorker.schedule(app, intervalSeconds.toLong())
-            Log.i(TAG, "Background config refresh registered (interval=${intervalSeconds}s, accelerate=${accelerateUrl != null})")
+            Log.i(TAG, "Background config refresh registered (interval=${intervalSeconds}s)")
         }
 
         // Cancel the periodic WorkManager task.
@@ -599,9 +600,8 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
         }
 
         // Execute config refresh immediately (foreground / dev screen).
-        AsyncFunction("executeConfigRefreshNow") { url: String, userAgent: String, accelerateUrl: String?, testPrimaryUrlUnavailable: Boolean? ->
-            val acc    = accelerateUrl?.takeIf { it.isNotBlank() }
-            val result = runBlocking { executeRefreshWith(app, url, acc, userAgent, testPrimaryUrlUnavailable ?: false) }
+        AsyncFunction("executeConfigRefreshNow") { url: String, userAgent: String ->
+            val result = runBlocking { executeRefreshWith(app, url, userAgent) }
             // Do NOT storeResult here: JS receives the result directly and calls
             // applyResultToSBConfig() itself. Storing would overwrite any pending
             // background doWork() result in SharedPrefs, causing it to be lost.
