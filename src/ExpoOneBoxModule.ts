@@ -15,6 +15,8 @@ declare class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
   requestBatteryOptimizationExemption(): Promise<boolean>;
   /** Android only: intentionally crash the native process for Bugsnag verification. */
   crashForBugsnagTest(): boolean;
+  /** Android only: repairs the Expo SQLite database directory if an older build created a file at that path. */
+  repairSQLiteDirectory(): boolean;
   getStatus(): number;
   /** Sync read of the last startup error written by the Extension/Service. Empty = no error. */
   getStartError(): string;

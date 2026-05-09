@@ -288,6 +288,24 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
             true
         }
 
+        Function("repairSQLiteDirectory") {
+            val sqliteDir = File(context.filesDir, "SQLite")
+            return@Function try {
+                if (sqliteDir.exists() && !sqliteDir.isDirectory) {
+                    val deleted = sqliteDir.delete()
+                    if (!deleted) {
+                        Log.w(TAG, "[SQLiteRepair] Failed to delete non-directory path: ${sqliteDir.absolutePath}")
+                        return@Function false
+                    }
+                    Log.w(TAG, "[SQLiteRepair] Deleted non-directory path: ${sqliteDir.absolutePath}")
+                }
+                sqliteDir.mkdirs() || sqliteDir.isDirectory
+            } catch (e: Exception) {
+                Log.w(TAG, "[SQLiteRepair] Failed to repair SQLite directory: ${e.message}")
+                false
+            }
+        }
+
         Function("setCoreLogEnabled") { enabled: Boolean ->
             coreLogEnabled = enabled
             Log.d(TAG, "Core log output ${if (enabled) "enabled" else "disabled"}")

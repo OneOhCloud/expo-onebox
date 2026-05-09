@@ -228,6 +228,10 @@ class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
     throw new Error('Bugsnag native crash test is Android-only.');
   }
 
+  repairSQLiteDirectory(): boolean {
+    return true;
+  }
+
   async copy2CacheDbPath(_sourceUri: string): Promise<boolean> {
     return true;
   }
