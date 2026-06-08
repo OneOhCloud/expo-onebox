@@ -1,3 +1,5 @@
+// 基于 src/modules/expo-onebox/helper/sing-box/cmd/internal/build_libbox/main.go
+// 改进而来，每次更新需要对比。
 package main
 
 import (
