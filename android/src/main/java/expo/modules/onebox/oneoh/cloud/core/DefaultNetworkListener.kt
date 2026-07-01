@@ -2,6 +2,7 @@ package expo.modules.onebox.oneoh.cloud.core
 
 import android.annotation.TargetApi
 import android.net.ConnectivityManager
+import android.net.LinkProperties
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
@@ -33,12 +34,16 @@ object DefaultNetworkListener {
         class Put(val network: Network) : NetworkMessage()
         class Update(val network: Network) : NetworkMessage()
         class Lost(val network: Network) : NetworkMessage()
+        class LinkChange(val network: Network, val lp: LinkProperties) : NetworkMessage()
     }
 
     @OptIn(DelicateCoroutinesApi::class, ObsoleteCoroutinesApi::class)
     private val networkActor = GlobalScope.actor<NetworkMessage>(Dispatchers.Unconfined) {
         val listeners = mutableMapOf<Any, (Network?) -> Unit>()
         var network: Network? = null
+        // Baseline link properties of the current default network, used to detect a
+        // same-interface IP/DNS/route change (the case sing-box's monitor dedups).
+        var lastLp: LinkProperties? = null
         val pendingRequests = arrayListOf<NetworkMessage.Get>()
         for (message in channel) {
             when (message) {
@@ -66,6 +71,7 @@ object DefaultNetworkListener {
                 }
                 is NetworkMessage.Put -> {
                     network = message.network
+                    lastLp = null // re-baseline link properties for the new default network
                     pendingRequests.forEach { it.response.complete(message.network) }
                     pendingRequests.clear()
                     listeners.values.forEach { it(network) }
@@ -78,7 +84,22 @@ object DefaultNetworkListener {
                 is NetworkMessage.Lost -> {
                     if (network == message.network) {
                         network = null
+                        lastLp = null
                         listeners.values.forEach { it(null) }
+                    }
+                }
+                is NetworkMessage.LinkChange -> {
+                    if (network == message.network) {
+                        val prev = lastLp
+                        lastLp = message.lp
+                        // Fire only on a real change from an established baseline — the first
+                        // link-properties report for a network is the baseline, not a change.
+                        val changed = prev != null && (
+                            prev.linkAddresses != message.lp.linkAddresses ||
+                                prev.dnsServers != message.lp.dnsServers ||
+                                prev.routes != message.lp.routes
+                            )
+                        if (changed) DefaultNetworkMonitor.notifyLinkChanged()
                     }
                 }
             }
@@ -115,6 +136,10 @@ object DefaultNetworkListener {
 
         override fun onLost(network: Network) = runBlocking {
             networkActor.send(NetworkMessage.Lost(network))
+        }
+
+        override fun onLinkPropertiesChanged(network: Network, linkProperties: LinkProperties) {
+            runBlocking { networkActor.send(NetworkMessage.LinkChange(network, linkProperties)) }
         }
     }
 

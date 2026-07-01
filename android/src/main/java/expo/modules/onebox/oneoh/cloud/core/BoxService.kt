@@ -122,6 +122,15 @@ class BoxService(
             }
 
             DefaultNetworkMonitor.start()
+            // Same-interface IP/DNS changes (WiFi roam, DHCP renew) are deduped by
+            // sing-box's interface monitor and skip its auto-reset; close stale
+            // connections explicitly when the link properties change.
+            DefaultNetworkMonitor.onNetworkReset = {
+                if (::commandServer.isInitialized && status.value == Status.Started) {
+                    Log.d(TAG, "link properties changed → resetNetwork")
+                    commandServer.resetNetwork()
+                }
+            }
 
             try {
                 commandServer.startOrReloadService(
@@ -192,14 +201,21 @@ class BoxService(
     }
 
     private fun serviceUpdateIdleMode() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            val context = service.applicationContext
-            val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
-            if (powerManager.isDeviceIdleMode) {
-                commandServer.pause()
-            } else {
-                commandServer.wake()
-            }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
+        // The receiver is registered before startCommandServer() finishes, so a Doze
+        // transition during startup could otherwise touch an uninitialized commandServer.
+        if (!::commandServer.isInitialized || status.value != Status.Started) return
+        val context = service.applicationContext
+        val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+        if (powerManager.isDeviceIdleMode) {
+            commandServer.pause()
+        } else {
+            commandServer.wake()
+            // Leaving Doze implies a long idle; the proxy sockets are almost certainly dead.
+            // Close all connections so the next request dials fresh instead of stalling on a
+            // dead socket's timeout — sing-box's Wake() never closes them.
+            Log.d(TAG, "exited Doze → resetNetwork")
+            commandServer.resetNetwork()
         }
     }
 
@@ -220,6 +236,7 @@ class BoxService(
                 pfd.close()
                 fileDescriptor = null
             }
+            DefaultNetworkMonitor.onNetworkReset = null
             DefaultNetworkMonitor.stop()
             closeService()
             commandServer.apply {

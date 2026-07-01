@@ -244,6 +244,10 @@ class ExtensionPlatformInterface: NSObject, LibboxPlatformInterfaceProtocol, Lib
     }
 
     private var nwMonitor: NWPathMonitor?
+    /// Last default interface reported to sing-box, used to distinguish a genuine
+    /// interface switch (index change → core auto-resets) from a same-interface IP/DNS
+    /// change (deduped by the core → we must reset explicitly).
+    private var lastReportedInterface: (name: String, index: Int32)?
 
     func startDefaultInterfaceMonitor(_ listener: LibboxInterfaceUpdateListenerProtocol?) throws {
         guard let listener else {
@@ -271,10 +275,21 @@ class ExtensionPlatformInterface: NSObject, LibboxPlatformInterfaceProtocol, Lib
         guard path.status != .unsatisfied,
               let defaultInterface = path.availableInterfaces.first
         else {
+            lastReportedInterface = nil
             listener.updateDefaultInterface("", interfaceIndex: -1, isExpensive: false, isConstrained: false)
             return
         }
-        listener.updateDefaultInterface(defaultInterface.name, interfaceIndex: Int32(defaultInterface.index), isExpensive: path.isExpensive, isConstrained: path.isConstrained)
+        let name = defaultInterface.name
+        let index = Int32(defaultInterface.index)
+        // Same interface (name+index) but the path changed → sing-box dedups this and skips
+        // its automatic reset, yet the IP/route/DNS may have moved (WiFi roam, DHCP renew).
+        // Force a reset so stale connections don't linger. Genuine switches (index changes)
+        // are left to the core's own reset to avoid double-closing.
+        if let last = lastReportedInterface, last.name == name, last.index == index {
+            tunnel.requestNetworkReset()
+        }
+        lastReportedInterface = (name, index)
+        listener.updateDefaultInterface(name, interfaceIndex: index, isExpensive: path.isExpensive, isConstrained: path.isConstrained)
     }
 
     func closeDefaultInterfaceMonitor(_ listener: LibboxInterfaceUpdateListenerProtocol?) throws {

@@ -13,6 +13,17 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
     var tunnelOptions: [String: NSObject]?
     private var startOptionsURL: URL?
 
+    /// Timestamp captured in sleep() so wake() can tell how long the device idled.
+    private var sleepStartedAt: Date?
+    /// Only reset the network on wake when the device slept at least this long — a brief
+    /// screen toggle shouldn't tear down live transfers, but a long idle almost certainly
+    /// left the proxy sockets dead.
+    private static let wakeResetThreshold: TimeInterval = 20
+    /// Coalesce bursts of same-interface path updates into a single reset.
+    private static let networkResetDebounce: TimeInterval = 0.8
+    private var lastNetworkResetAt: Date?
+    private let networkResetLock = NSLock()
+
     struct OverridePreferences {
         var includeAllNetworks: Bool = false
         var systemProxyEnabled: Bool = true
@@ -267,14 +278,43 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     override func sleep() async {
+        // Record when we go to sleep so wake() can gate the reset on idle duration.
+        sleepStartedAt = Date()
         if let commandServer {
             commandServer.pause()
         }
     }
 
     override func wake() {
-        if let commandServer {
-            commandServer.wake()
+        guard let commandServer else { return }
+        commandServer.wake()
+        // A long idle usually leaves the proxy sockets dead (NAT/keepalive timeout while
+        // radios were off). Proactively close all connections so the next request dials
+        // fresh instead of stalling on a dead socket's TCP/QUIC timeout. This mirrors
+        // sing-box's own desktop suspend/resume behaviour (route/network.go:526-536),
+        // which the mobile Pause()/Wake() path omits.
+        let elapsed = sleepStartedAt.map { Date().timeIntervalSince($0) } ?? .infinity
+        sleepStartedAt = nil
+        if elapsed >= Self.wakeResetThreshold {
+            logger.log("wake after long idle → resetNetwork")
+            commandServer.resetNetwork()
         }
+    }
+
+    /// Debounced, thread-safe reset for same-interface path changes (WiFi roam / DHCP
+    /// renew) whose (name, index) is unchanged and therefore deduped away by sing-box's
+    /// interface monitor (experimental/libbox/monitor.go:95). Called from the NWPath
+    /// update handler, so it may run off the provider queue.
+    func requestNetworkReset() {
+        networkResetLock.lock()
+        let now = Date()
+        if let last = lastNetworkResetAt, now.timeIntervalSince(last) < Self.networkResetDebounce {
+            networkResetLock.unlock()
+            return
+        }
+        lastNetworkResetAt = now
+        networkResetLock.unlock()
+        logger.log("same-interface path change → resetNetwork")
+        commandServer?.resetNetwork()
     }
 }

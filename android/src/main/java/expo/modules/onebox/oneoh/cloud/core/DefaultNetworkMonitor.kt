@@ -2,6 +2,7 @@ package expo.modules.onebox.oneoh.cloud.core
 
 import android.net.Network
 import android.os.Build
+import android.os.SystemClock
 import expo.modules.onebox.oneoh.cloud.ExpoOneBoxModule
 import expo.modules.onebox.oneoh.cloud.ExpoOneBoxModule.Companion.connectivity
 import io.nekohasekai.libbox.InterfaceUpdateListener
@@ -15,6 +16,21 @@ object DefaultNetworkMonitor {
 
     var defaultNetwork: Network? = null
     @Volatile private var listener: InterfaceUpdateListener? = null
+
+    /** Set by BoxService; invoked (debounced) when the current default network's link
+     *  properties change without an interface-identity change — a case sing-box's
+     *  interface monitor dedups, so stale connections must be closed explicitly. */
+    @Volatile var onNetworkReset: (() -> Unit)? = null
+    @Volatile private var lastResetAt = 0L
+    private const val RESET_DEBOUNCE_MS = 800L
+
+    /** Coalesces bursts of link-property callbacks into at most one reset per window. */
+    fun notifyLinkChanged() {
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastResetAt < RESET_DEBOUNCE_MS) return
+        lastResetAt = now
+        onNetworkReset?.invoke()
+    }
 
     suspend fun start() {
         DefaultNetworkListener.start(this) {
