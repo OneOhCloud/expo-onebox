@@ -10,7 +10,7 @@ import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
-import java.security.cert.X509Certificate
+import java.security.KeyStore
 import java.util.concurrent.TimeUnit
 import javax.net.ssl.HostnameVerifier
 import javax.net.ssl.HttpsURLConnection
@@ -19,6 +19,7 @@ import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLParameters
 import javax.net.ssl.SSLSocket
 import javax.net.ssl.SSLSocketFactory
+import javax.net.ssl.TrustManagerFactory
 import javax.net.ssl.X509TrustManager
 import kotlin.random.Random
 
@@ -36,6 +37,30 @@ data class ConfigFetchResult(
 // When connecting to an IP address, TLS would fail because the server certificate
 // is issued for the hostname, not the IP. This factory injects the original hostname
 // as the SNI server name so the TLS handshake uses the correct name.
+
+/**
+ * Platform-default X509TrustManager (system trust store).
+ *
+ * OkHttp performs certificate-chain validation/cleaning through the
+ * trust manager passed to sslSocketFactory(factory, trustManager) — the
+ * factory's own SSLContext does NOT cover it on this custom-factory
+ * path. A pass-through manager here disables chain validation entirely
+ * and exposes config fetching to MITM. Never substitute a no-op
+ * implementation.
+ */
+private fun systemDefaultTrustManager(): X509TrustManager {
+    val tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm())
+    tmf.init(null as KeyStore?)
+    return tmf.trustManagers.filterIsInstance<X509TrustManager>().first()
+}
+
+/** Short host digest for logs — the hostname is user profile data. */
+private fun hostHash8(host: String): String {
+    val digest = java.security.MessageDigest.getInstance("SHA-256")
+    return digest.digest(host.toByteArray(Charsets.UTF_8))
+        .joinToString("") { "%02x".format(it) }
+        .take(8)
+}
 
 private class SNISocketFactory(
     private val delegate: SSLSocketFactory,
@@ -97,7 +122,7 @@ internal suspend fun fetchConfig(url: String, userAgent: String): ConfigFetchRes
         return fetchDirect(url, userAgent)
     }
 
-    Log.i(TAG, "Resolved $originalHost → $resolvedIP via $bestDns")
+    Log.i(TAG, "Resolved host(sha8=${hostHash8(originalHost)}) → $resolvedIP via $bestDns")
 
     // Replace host with resolved IP, keep scheme/port/path/query
     val port = parsedUri.port.let { if (it == -1) "" else ":$it" }
@@ -115,23 +140,18 @@ internal suspend fun fetchConfig(url: String, userAgent: String): ConfigFetchRes
         HttpsURLConnection.getDefaultHostnameVerifier().verify(originalHost, session)
     }
 
-    // Use a pass-through TrustManager — actual trust is already enforced by the
-    // default SSLContext via the system trust store; we only override the hostname check.
-    val trustManager = object : X509TrustManager {
-        override fun checkClientTrusted(chain: Array<X509Certificate>, authType: String) {}
-        override fun checkServerTrusted(chain: Array<X509Certificate>, authType: String) {
-            // Trust validation happens inside the SSLSocketFactory using the system trust store.
-            // The default SSLContext already verified the chain; we only override hostname here.
-        }
-        override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
-    }
+    // Real system trust manager — OkHttp drives chain validation through it
+    // (see systemDefaultTrustManager doc). Only SNI and the hostname check
+    // are overridden on this path.
+    val trustManager = systemDefaultTrustManager()
 
     val client = OkHttpClient.Builder()
         .sslSocketFactory(sniFactory, trustManager)
         .hostnameVerifier(hostnameVerifier)
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
-        .callTimeout(60, TimeUnit.SECONDS)
+        // 30 s wall clock aligns with the iOS fetcher (config-fetch-policy).
+        .callTimeout(30, TimeUnit.SECONDS)
         .build()
 
     val request = Request.Builder()
@@ -263,7 +283,8 @@ private fun fetchDirect(url: String, userAgent: String): ConfigFetchResult {
     val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
-        .callTimeout(60, TimeUnit.SECONDS)
+        // 30 s wall clock aligns with the iOS fetcher (config-fetch-policy).
+        .callTimeout(30, TimeUnit.SECONDS)
         .build()
     val request = Request.Builder()
         .url(url)
