@@ -1,6 +1,6 @@
 import { NativeModule, requireNativeModule } from 'expo';
 
-import { ConfigRefreshResult, ExpoOneBoxModuleEvents, ConfigFetchResult, VerificationData } from './ExpoOneBox.types';
+import { BackgroundRefreshOptions, ConfigRefreshResult, ExpoOneBoxModuleEvents, ConfigFetchResult, VerificationData } from './ExpoOneBox.types';
 
 declare class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
   hello(): string;
@@ -67,6 +67,14 @@ declare class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
    * 24 h before falling back to the built-in list.
    */
   setVerificationData(data: VerificationData): Promise<void>;
+
+  /**
+   * Mirror JS-managed refresh options into the native background worker's
+   * shared store (AppGroup UserDefaults / SharedPreferences). The worker
+   * must never read the JS-owned database file directly — a second SQLite
+   * library on the same WAL database crashes with SIGBUS.
+   */
+  setBackgroundConfigRefreshOptions(options: BackgroundRefreshOptions): Promise<void>;
 
   /** Register (or update) the native periodic background config refresh. */
   registerBackgroundConfigRefresh(url: string, userAgent: string, intervalSeconds: number): Promise<void>;

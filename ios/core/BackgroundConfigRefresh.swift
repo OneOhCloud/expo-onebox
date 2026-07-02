@@ -1,7 +1,6 @@
 import CryptoKit
 import Foundation
 import BackgroundTasks
-import SQLite3
 
 // MARK: - Config Refresh Result
 
@@ -56,8 +55,11 @@ struct BackgroundConfigRefresh {
     private static let kKnownDomainSha256List    = "bg_known_domain_sha256_list"
     private static let kVerifiedDomainSha256List = "bg_verified_domain_sha256_list"
     private static let kDomainVerificationUpdatedAt = "bg_domain_verification_updated_at"
-    private static let kJsKvTestPrimaryUnavailableKey = "dev:test-primary-url-unavailable"
-    private static let kJsKvAccelerateUrlKey = "config:accelerate-url"
+    // Refresh options mirrored from JS via `setBackgroundConfigRefreshOptions`.
+    // Never read the JS-owned SQLite database here: a second SQLite library on
+    // the same WAL file breaks in-process POSIX locking and crashes with SIGBUS.
+    private static let kAccelerateUrl             = "bg_accelerate_url"
+    private static let kTestPrimaryUrlUnavailable = "bg_test_primary_unavailable"
     /// Shared cache is honoured for 24h; after that the worker falls back to
     /// its own network fetch. Mirrors `CACHE_TTL_MS` in `domain-verification.ts`.
     private static let domainVerificationTtlSeconds: Double = 24 * 3600
@@ -73,66 +75,26 @@ struct BackgroundConfigRefresh {
         return "set(unparseable,len=\(raw.count))"
     }
 
-    private static func summarizeKvValue(_ key: String, _ value: String?) -> String {
-        switch key {
-        case kJsKvTestPrimaryUnavailableKey:
-            return value == "true" ? "true" : "false-or-empty"
-        case kJsKvAccelerateUrlKey:
-            return summarizeAccelerateUrl(value)
-        default:
-            guard let value, !value.isEmpty else { return "empty" }
-            return "set(len=\(value.count))"
-        }
-    }
-
-    private static func getJsKvValue(_ key: String) -> String? {
-        guard let docDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
-            return nil
-        }
-        let dbURL = docDir
-            .appendingPathComponent("SQLite", isDirectory: true)
-            .appendingPathComponent("config.db")
-        guard FileManager.default.fileExists(atPath: dbURL.path) else {
-            NSLog("[CONFIG_LOAD] kv_store数据库不存在: %@, key=%@", dbURL.path, key)
-            return nil
-        }
-
-        var db: OpaquePointer?
-        guard sqlite3_open_v2(dbURL.path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
-            if let db { sqlite3_close(db) }
-            return nil
-        }
-        defer { sqlite3_close(db) }
-
-        let sql = "SELECT value FROM kv_store WHERE key = ? LIMIT 1"
-        var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
-            if let stmt { sqlite3_finalize(stmt) }
-            return nil
-        }
-        defer { sqlite3_finalize(stmt) }
-
-        sqlite3_bind_text(stmt, 1, (key as NSString).utf8String, -1, nil)
-        guard sqlite3_step(stmt) == SQLITE_ROW else {
-            NSLog("[CONFIG_LOAD] kv_store未命中: key=%@", key)
-            return nil
-        }
-        guard let cValue = sqlite3_column_text(stmt, 0) else { return nil }
-        let value = String(cString: cValue)
-        NSLog("[CONFIG_LOAD] kv_store命中: key=%@, value=%@", key, summarizeKvValue(key, value))
-        return value
-    }
-
     private static func isTestPrimaryUrlUnavailableEnabled() -> Bool {
-        return getJsKvValue(kJsKvTestPrimaryUnavailableKey) == "true"
+        return UserDefaults(suiteName: appGroupID)?.bool(forKey: kTestPrimaryUrlUnavailable) ?? false
     }
 
-    private static func readAccelerateUrlFromKv() -> String? {
-        guard let value = getJsKvValue(kJsKvAccelerateUrlKey)?.trimmingCharacters(in: .whitespacesAndNewlines),
+    private static func readAccelerateUrl() -> String? {
+        guard let value = UserDefaults(suiteName: appGroupID)?
+                .string(forKey: kAccelerateUrl)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
               !value.isEmpty else {
             return nil
         }
         return value
+    }
+
+    /// Called from JS (`setBackgroundConfigRefreshOptions`) at app init and
+    /// whenever the dev toggle flips. Full overwrite of both values, idempotent.
+    static func saveRefreshOptions(accelerateUrl: String, testPrimaryUrlUnavailable: Bool) {
+        guard let defaults = UserDefaults(suiteName: appGroupID) else { return }
+        defaults.set(accelerateUrl, forKey: kAccelerateUrl)
+        defaults.set(testPrimaryUrlUnavailable, forKey: kTestPrimaryUrlUnavailable)
     }
 
     // MARK: - Registration (must be called at app launch, before didFinishLaunching returns)
@@ -231,10 +193,10 @@ struct BackgroundConfigRefresh {
     /// Rules:
     ///   1. Try primary URL first.
     ///   2. Only network-level failures trigger fallback (HTTP non-2xx does not).
-    ///   3. Fallback requires verified domain + configured accelerateUrl in kv_store.
+    ///   3. Fallback requires verified domain + a JS-pushed accelerate URL.
     ///
-    /// When `kv_store["dev:test-primary-url-unavailable"] == "true"`,
-    /// primary actively throws to simulate real network failure for fallback testing.
+    /// When the JS-pushed `testPrimaryUrlUnavailable` option is on, primary
+    /// actively throws to simulate real network failure for fallback testing.
     static func fetchSubscriptionWithFallback(
         url: String,
         userAgent: String
@@ -254,7 +216,7 @@ struct BackgroundConfigRefresh {
             NSLog("[CONFIG_LOAD] 方式=DOMAIN_UNVERIFIED, 域名SHA256=%@, 加速备用已禁用", domainSha)
         }
         let testPrimaryUnavailable = isTestPrimaryUrlUnavailableEnabled()
-        let accelerateUrl = readAccelerateUrlFromKv()
+        let accelerateUrl = readAccelerateUrl()
         NSLog(
             "[CONFIG_LOAD] 请求前开关状态(fetchSubscription): testPrimaryUnavailable=%@, accelerate=%@",
             testPrimaryUnavailable ? "true" : "false",
@@ -313,7 +275,7 @@ struct BackgroundConfigRefresh {
 
     /// Primary → accelerated fallback.
     /// HTTP errors (non-2xx) do NOT trigger fallback — only network-level failures do.
-    /// When `kv_store["dev:test-primary-url-unavailable"] == "true"`, primary
+    /// When the JS-pushed `testPrimaryUrlUnavailable` option is on, primary
     /// request actively throws to test fallback behaviour.
     static func executeRefreshWith(url: String, userAgent: String) async -> ConfigRefreshResult {
         let start    = Date()
@@ -338,7 +300,7 @@ struct BackgroundConfigRefresh {
             NSLog("[CONFIG_LOAD] 方式=DOMAIN_UNVERIFIED, 域名SHA256=%@, 加速备用已禁用", domainSha)
         }
         let testPrimaryUnavailable = isTestPrimaryUrlUnavailableEnabled()
-        let accelerateUrl = readAccelerateUrlFromKv()
+        let accelerateUrl = readAccelerateUrl()
         NSLog(
             "[CONFIG_LOAD] 请求前开关状态(executeRefresh): testPrimaryUnavailable=%@, accelerate=%@",
             testPrimaryUnavailable ? "true" : "false",

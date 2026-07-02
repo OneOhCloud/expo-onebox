@@ -1,6 +1,6 @@
 import { NativeModule, registerWebModule } from 'expo';
 
-import { ExpoOneBoxModuleEvents, VerificationData, VPN_STATUS } from './ExpoOneBox.types';
+import { BackgroundRefreshOptions, ExpoOneBoxModuleEvents, VerificationData, VPN_STATUS } from './ExpoOneBox.types';
 
 // 模拟代理节点数据
 const MOCK_PROXY_NODE_TAGS = ['auto', 'hk-01', 'hk-02', 'sg-01', 'jp-01', 'us-01', 'tw-01', 'de-01'];
@@ -250,6 +250,10 @@ class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
 
   async setVerificationData(_data: VerificationData): Promise<void> {
     console.log('[Web Mock] setVerificationData');
+  }
+
+  async setBackgroundConfigRefreshOptions(_options: BackgroundRefreshOptions): Promise<void> {
+    console.log('[Web Mock] setBackgroundConfigRefreshOptions');
   }
 
   async registerBackgroundConfigRefresh(_url: string, _userAgent: string, _intervalSeconds: number): Promise<void> {

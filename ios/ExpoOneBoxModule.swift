@@ -221,7 +221,7 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
         // ─── Config Fetching (DNS-resolved) ─────────────────────────────────────
 
         // Fetch a config URL with DNS-resolved primary + optional accelerator fallback.
-        // Accelerator URL is loaded by native from kv_store.
+        // Accelerator URL comes from the JS-pushed shared options (AppGroup UserDefaults).
         AsyncFunction("fetchSubscription") { (url: String, userAgent: String) async throws -> [String: Any] in
             let result = try await BackgroundConfigRefresh.fetchSubscriptionWithFallback(
                 url: url,
@@ -245,6 +245,18 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
             let known    = data["knownSha256List"]    as? [String] ?? []
             let verified = data["verifiedSha256List"] as? [String] ?? []
             BackgroundConfigRefresh.saveDomainVerificationCache(known: known, verified: verified)
+        }
+
+        // Mirror JS-managed refresh options into AppGroup UserDefaults so the
+        // BGTaskScheduler worker never opens the JS-owned SQLite database —
+        // a second SQLite library on the same WAL file crashes with SIGBUS.
+        AsyncFunction("setBackgroundConfigRefreshOptions") { (options: [String: Any]) async in
+            let accelerateUrl = options["accelerateUrl"] as? String ?? ""
+            let testFlag      = options["testPrimaryUrlUnavailable"] as? Bool ?? false
+            BackgroundConfigRefresh.saveRefreshOptions(
+                accelerateUrl: accelerateUrl,
+                testPrimaryUrlUnavailable: testFlag
+            )
         }
 
         // Register (or update) the native background config refresh task.

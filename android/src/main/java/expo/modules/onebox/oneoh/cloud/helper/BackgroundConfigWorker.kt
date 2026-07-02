@@ -1,7 +1,6 @@
 package expo.modules.onebox.oneoh.cloud.helper
 
 import android.content.Context
-import android.database.sqlite.SQLiteDatabase
 import android.util.Log
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
@@ -12,14 +11,16 @@ import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.google.gson.Gson
-import java.io.File
 import java.time.Instant
 import java.util.concurrent.TimeUnit
 
 private const val TAG = "BackgroundConfigWorker"
 internal const val BG_PREFS_NAME = "expo_onebox_background_config"
-private const val JS_KV_TEST_PRIMARY_UNAVAILABLE_KEY = "dev:test-primary-url-unavailable"
-private const val JS_KV_ACCELERATE_URL_KEY = "config:accelerate-url"
+// Refresh options mirrored from JS via `setBackgroundConfigRefreshOptions`.
+// Never read the JS-owned SQLite database here: a second SQLite library on
+// the same WAL file breaks in-process POSIX locking and crashes with SIGBUS.
+private const val KEY_ACCELERATE_URL               = "accelerate_url"
+private const val KEY_TEST_PRIMARY_URL_UNAVAILABLE = "test_primary_url_unavailable"
 private val gson = Gson()
 
 // MARK: - Result model
@@ -165,6 +166,23 @@ class BackgroundConfigWorker(
             } catch (_: Exception) { null }
         }
 
+        // ─── Refresh options (pushed from JS) ────────────────────────────────
+
+        /// Called from JS (`ExpoOneBoxModule.setBackgroundConfigRefreshOptions`)
+        /// at app init and whenever the dev toggle flips. Full overwrite of
+        /// both values, idempotent. Same prefs file the worker already reads.
+        fun saveRefreshOptions(
+            context: Context,
+            accelerateUrl: String,
+            testPrimaryUrlUnavailable: Boolean,
+        ) {
+            context.getSharedPreferences(BG_PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .putString(KEY_ACCELERATE_URL, accelerateUrl)
+                .putBoolean(KEY_TEST_PRIMARY_URL_UNAVAILABLE, testPrimaryUrlUnavailable)
+                .apply()
+        }
+
     }
 
     override suspend fun doWork(): Result {
@@ -282,51 +300,16 @@ private fun summarizeAccelerateUrl(value: String?): String {
     else "set(unparseable,len=${trimmed.length})"
 }
 
-private fun summarizeKvValue(key: String, value: String?): String {
-    return when (key) {
-        JS_KV_TEST_PRIMARY_UNAVAILABLE_KEY -> (if (value == "true") "true" else "false-or-empty")
-        JS_KV_ACCELERATE_URL_KEY -> summarizeAccelerateUrl(value)
-        else -> if (value.isNullOrEmpty()) "empty" else "set(len=${value.length})"
-    }
-}
-
-private fun getJsKvValue(context: Context, key: String): String? {
-    val dbFile = File(File(context.filesDir, "SQLite"), "config.db")
-    if (!dbFile.exists()) {
-        Log.w(TAG, "[CONFIG_LOAD] kv_store数据库不存在: ${dbFile.absolutePath}, key=$key")
-        return null
-    }
-
-    var db: SQLiteDatabase? = null
-    return try {
-        db = SQLiteDatabase.openDatabase(dbFile.absolutePath, null, SQLiteDatabase.OPEN_READONLY)
-        db.rawQuery(
-            "SELECT value FROM kv_store WHERE key = ? LIMIT 1",
-            arrayOf(key),
-        ).use { cursor ->
-            if (!cursor.moveToFirst()) {
-                Log.i(TAG, "[CONFIG_LOAD] kv_store未命中: key=$key")
-                return null
-            }
-            val value = cursor.getString(0)
-            Log.i(TAG, "[CONFIG_LOAD] kv_store命中: key=$key, value=${summarizeKvValue(key, value)}")
-            value
-        }
-    } catch (e: Exception) {
-        Log.w(TAG, "[CONFIG_LOAD] 读取kv_store失败(key=$key): ${e.message}")
-        null
-    } finally {
-        db?.close()
-    }
-}
-
 private fun isTestPrimaryUrlUnavailableEnabled(context: Context): Boolean {
-    return getJsKvValue(context, JS_KV_TEST_PRIMARY_UNAVAILABLE_KEY) == "true"
+    return context.getSharedPreferences(BG_PREFS_NAME, Context.MODE_PRIVATE)
+        .getBoolean(KEY_TEST_PRIMARY_URL_UNAVAILABLE, false)
 }
 
-private fun readAccelerateUrlFromKv(context: Context): String? {
-    val value = getJsKvValue(context, JS_KV_ACCELERATE_URL_KEY)?.trim()
-    return value?.takeIf { it.isNotEmpty() }
+private fun readAccelerateUrl(context: Context): String? {
+    return context.getSharedPreferences(BG_PREFS_NAME, Context.MODE_PRIVATE)
+        .getString(KEY_ACCELERATE_URL, null)
+        ?.trim()
+        ?.takeIf { it.isNotEmpty() }
 }
 
 // MARK: - Shared fetch executor (foreground native fetchSubscription)
@@ -337,9 +320,9 @@ private fun readAccelerateUrlFromKv(context: Context): String? {
  * Rules match executeRefreshWith:
  *   1. Try primary URL first
  *   2. Only network exceptions trigger fallback (HTTP non-2xx does not)
- *   3. Fallback requires verified domain + configured accelerateUrl (from kv_store)
+ *   3. Fallback requires verified domain + a JS-pushed accelerate URL
  *
- * When `kv_store["dev:test-primary-url-unavailable"] == "true"`, primary
+ * When the JS-pushed `testPrimaryUrlUnavailable` option is on, primary
  * request actively throws to simulate network failure for fallback testing.
  */
 internal suspend fun fetchSubscriptionWithFallback(
@@ -354,7 +337,7 @@ internal suspend fun fetchSubscriptionWithFallback(
         Log.w(TAG, "[CONFIG_LOAD] 域名未验证: SHA256=$domainSha, 加速备用已禁用")
     }
     val testPrimaryUnavailable = isTestPrimaryUrlUnavailableEnabled(context)
-    val accelerateUrl = readAccelerateUrlFromKv(context)
+    val accelerateUrl = readAccelerateUrl(context)
     Log.i(
         TAG,
         "[CONFIG_LOAD] 请求前开关状态(fetchSubscription): testPrimaryUnavailable=$testPrimaryUnavailable, accelerate=${summarizeAccelerateUrl(accelerateUrl)}",
@@ -395,7 +378,7 @@ internal suspend fun fetchSubscriptionWithFallback(
 // MARK: - Shared refresh executor (foreground + background)
 
 /**
- * Fetch [url] with fallback to accelerate URL from `kv_store`.
+ * Fetch [url] with fallback to the JS-pushed accelerate URL.
  * Core logic (unified):
  *   1. Try [url] (primary)
  *   2. If fails (network exception) and domain verified → try accelerated URL
@@ -419,7 +402,7 @@ internal suspend fun executeRefreshWith(
         Log.w(TAG, "[CONFIG_LOAD] 域名未验证: SHA256=$domainSha, 加速备用已禁用")
     }
     val testPrimaryUnavailable = isTestPrimaryUrlUnavailableEnabled(context)
-    val accelerateUrl = readAccelerateUrlFromKv(context)
+    val accelerateUrl = readAccelerateUrl(context)
     Log.i(
         TAG,
         "[CONFIG_LOAD] 请求前开关状态(executeRefresh): testPrimaryUnavailable=$testPrimaryUnavailable, accelerate=${summarizeAccelerateUrl(accelerateUrl)}",

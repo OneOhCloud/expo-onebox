@@ -579,7 +579,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
         // ─── Config Fetching (DNS-resolved) ─────────────────────────────────────
 
         // Fetch a config URL using DNS resolution + optional accelerator fallback.
-        // Accelerator URL is loaded by native from kv_store.
+        // Accelerator URL comes from the JS-pushed shared options (SharedPreferences).
         AsyncFunction("fetchSubscription") { url: String, userAgent: String ->
             val result = runBlocking {
                 fetchSubscriptionWithFallback(
@@ -608,6 +608,15 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
             @Suppress("UNCHECKED_CAST")
             val verified = (data["verifiedSha256List"] as? List<String>) ?: emptyList()
             BackgroundConfigWorker.saveDomainVerificationCache(app, known, verified)
+        }
+
+        // Mirror JS-managed refresh options into the worker's SharedPreferences
+        // so the WorkManager task never opens the JS-owned SQLite database —
+        // a second SQLite library on the same WAL file crashes with SIGBUS.
+        AsyncFunction("setBackgroundConfigRefreshOptions") { options: Map<String, Any?> ->
+            val accelerateUrl = options["accelerateUrl"] as? String ?: ""
+            val testFlag      = options["testPrimaryUrlUnavailable"] as? Boolean ?: false
+            BackgroundConfigWorker.saveRefreshOptions(app, accelerateUrl, testFlag)
         }
 
         // Register (or update) the WorkManager periodic task.

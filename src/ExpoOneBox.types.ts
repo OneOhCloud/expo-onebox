@@ -90,6 +90,13 @@ export interface VerificationData {
   verifiedSha256List: string[];
 }
 
+export interface BackgroundRefreshOptions {
+  /** Accelerator base URL from the build-time constant; '' = not configured. */
+  accelerateUrl: string;
+  /** Dev-only probe: force the primary fetch to fail so the accelerate fallback path runs. */
+  testPrimaryUrlUnavailable: boolean;
+}
+
 export interface ConfigRefreshResult {
   status: 'success' | 'failed' | 'skipped';
   content?: string;
