@@ -1,4 +1,4 @@
-SING_BOX_TAG = "v1.13.13"
+SING_BOX_TAG = "v1.13.14"
 CRONET_ANDROID_MODULES = \
 	github.com/sagernet/cronet-go/lib/android_386 \
 	github.com/sagernet/cronet-go/lib/android_amd64 \
