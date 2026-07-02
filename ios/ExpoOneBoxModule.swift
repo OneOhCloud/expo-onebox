@@ -277,7 +277,12 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
         // Uses the same DNS-resolved fetcher as the background task, with accelerator fallback.
         AsyncFunction("executeConfigRefreshNow") { (url: String, userAgent: String) async -> [String: Any] in
             let result = await BackgroundConfigRefresh.executeRefreshWith(url: url, userAgent: userAgent)
-            BackgroundConfigRefresh.storeResult(result)
+            // Do NOT storeResult here: JS receives the result directly and calls
+            // applyResultToSBConfig() itself. Storing would overwrite any pending
+            // background refresh result and cause the next foreground sync to
+            // replay this manual result as a duplicate 'auto' TaskLog entry.
+            // (Matches the Android module; the persistence slot is reserved for
+            // true background runs — see BackgroundConfigRefresh.registerHandler.)
             return result.toDictionary()
         }
 
