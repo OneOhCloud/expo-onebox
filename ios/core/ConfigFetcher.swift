@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Network
 
@@ -37,6 +38,12 @@ private enum ConfigFetcherError: Error, LocalizedError {
 
 struct ConfigFetcher {
 
+    /// Short host digest for logs — the hostname is user profile data.
+    private static func hostHash8(_ host: String) -> String {
+        let digest = SHA256.hash(data: Data(host.utf8))
+        return digest.map { String(format: "%02x", $0) }.joined().prefix(8).description
+    }
+
     // MARK: - Public API
 
     /// Fetch a config URL using the best DNS server for resolution.
@@ -72,7 +79,7 @@ struct ConfigFetcher {
                 let bestDns = await DnsTester.findBest()
                 do {
                     connectTarget = try await resolveHostname(host, via: bestDns)
-                    NSLog("[ConfigFetcher] Resolved %@ → %@ via %@", host, connectTarget, bestDns)
+                    NSLog("[ConfigFetcher] Resolved host(sha8=%@) → %@ via %@", hostHash8(host), connectTarget, bestDns)
                 } catch {
                     NSLog("[ConfigFetcher] DNS failed (%@), falling back to hostname", error.localizedDescription)
                     connectTarget = host   // let NWConnection use system DNS
@@ -94,7 +101,7 @@ struct ConfigFetcher {
             if (301...308).contains(result.statusCode),
                let location = result.headers["location"],
                let redirectURL = URL(string: location, relativeTo: currentURL)?.absoluteURL {
-                NSLog("[ConfigFetcher] Redirect %d → %@", result.statusCode, redirectURL.absoluteString)
+                NSLog("[ConfigFetcher] Redirect %d → host(sha8=%@)", result.statusCode, hostHash8(redirectURL.host ?? ""))
                 currentURL = redirectURL
                 continue
             }

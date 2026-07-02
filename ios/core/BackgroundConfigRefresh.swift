@@ -197,6 +197,8 @@ struct BackgroundConfigRefresh {
     ///
     /// When the JS-pushed `testPrimaryUrlUnavailable` option is on, primary
     /// actively throws to simulate real network failure for fallback testing.
+    ///
+    /// Cancellation never triggers accelerator fallback.
     static func fetchSubscriptionWithFallback(
         url: String,
         userAgent: String
@@ -244,6 +246,11 @@ struct BackgroundConfigRefresh {
             primaryError = error.localizedDescription
         }
 
+        if Task.isCancelled {
+            NSLog("[CONFIG_LOAD] 方式=CANCELLED, 不触发回落")
+            throw CancellationError()
+        }
+
         if !verified {
             throw NSError(
                 domain: "ExpoOneBox",
@@ -261,7 +268,7 @@ struct BackgroundConfigRefresh {
             )
         }
 
-        NSLog("[CONFIG_LOAD] 方式=FALLBACK_ACCELERATOR, 原因=%@, 加速URL=%@", primaryError, accURL.absoluteString)
+        NSLog("[CONFIG_LOAD] 方式=FALLBACK_ACCELERATOR, 原因=%@, 加速URL=%@", primaryError, summarizeAccelerateUrl(accURL.absoluteString))
         do {
             return try await ConfigFetcher.fetch(url: accURL, userAgent: userAgent)
         } catch {
@@ -277,6 +284,9 @@ struct BackgroundConfigRefresh {
     /// HTTP errors (non-2xx) do NOT trigger fallback — only network-level failures do.
     /// When the JS-pushed `testPrimaryUrlUnavailable` option is on, primary
     /// request actively throws to test fallback behaviour.
+    ///
+    /// Cancellation (BGTask expiration) never triggers accelerator fallback —
+    /// it surfaces as a failed result with error=CANCELLED.
     static func executeRefreshWith(url: String, userAgent: String) async -> ConfigRefreshResult {
         let start    = Date()
         let isoStart = ISO8601DateFormatter().string(from: start)
@@ -335,7 +345,7 @@ struct BackgroundConfigRefresh {
                 )
             }
 
-            NSLog("[CONFIG_LOAD] 方式=PRIMARY, URL=%@", url)
+            NSLog("[CONFIG_LOAD] 方式=PRIMARY")
             let headerValue = result.headers["subscription-userinfo"]
             let info = parseUserinfo(headerValue)
             return ConfigRefreshResult(
@@ -353,6 +363,19 @@ struct BackgroundConfigRefresh {
         } catch {
             // Network-level failure — try accelerated URL only for verified domains
             primaryError = error.localizedDescription
+        }
+
+        if Task.isCancelled {
+            let durationMs = Int64(Date().timeIntervalSince(start) * 1000)
+            NSLog("[CONFIG_LOAD] 方式=CANCELLED, 不触发回落")
+            return ConfigRefreshResult(
+                status: "failed",
+                subscriptionUpload: 0, subscriptionDownload: 0,
+                subscriptionTotal: 0, subscriptionExpire: 0,
+                error: "CANCELLED",
+                timestamp: isoStart, durationMs: durationMs,
+                method: "primary"
+            )
         }
 
         // ── Fallback to accelerated URL ───────────────────────────────────────
@@ -383,7 +406,7 @@ struct BackgroundConfigRefresh {
                 )
             }
 
-            NSLog("[CONFIG_LOAD] 方式=FALLBACK_ACCELERATOR, 原因=%@, 加速URL=%@", primaryError, accURL.absoluteString)
+            NSLog("[CONFIG_LOAD] 方式=FALLBACK_ACCELERATOR, 原因=%@, 加速URL=%@", primaryError, summarizeAccelerateUrl(accURL.absoluteString))
 
             // ── Try accelerated URL ───────────────────────────────────────────
             do {
@@ -404,8 +427,8 @@ struct BackgroundConfigRefresh {
                 }
 
                 let headerValue = accResult.headers["subscription-userinfo"]
-                NSLog("[CONFIG_LOAD] 加速URL响应头 subscription-userinfo: %@", headerValue ?? "nil")
                 let info = parseUserinfo(headerValue)
+                NSLog("[CONFIG_LOAD] 方式=FALLBACK_ACCELERATOR, 上传=%lld, 下载=%lld, 总计=%lld, 过期=%lld", info.upload, info.download, info.total, info.expire)
                 return ConfigRefreshResult(
                     status: "success",
                     content: accResult.body,

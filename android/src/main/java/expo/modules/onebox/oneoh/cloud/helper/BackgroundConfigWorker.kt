@@ -13,6 +13,7 @@ import androidx.work.WorkerParameters
 import com.google.gson.Gson
 import java.time.Instant
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CancellationException
 
 private const val TAG = "BackgroundConfigWorker"
 internal const val BG_PREFS_NAME = "expo_onebox_background_config"
@@ -324,6 +325,8 @@ private fun readAccelerateUrl(context: Context): String? {
  *
  * When the JS-pushed `testPrimaryUrlUnavailable` option is on, primary
  * request actively throws to simulate network failure for fallback testing.
+ *
+ * Cancellation is rethrown — it must never trigger accelerator fallback.
  */
 internal suspend fun fetchSubscriptionWithFallback(
     context: Context,
@@ -334,7 +337,7 @@ internal suspend fun fetchSubscriptionWithFallback(
     val domainSha = sha256Hex(host)
     val verified  = verifyDomain(host, context)
     if (!verified) {
-        Log.w(TAG, "[CONFIG_LOAD] 域名未验证: SHA256=$domainSha, 加速备用已禁用")
+        Log.w(TAG, "[CONFIG_LOAD] 方式=DOMAIN_UNVERIFIED, 域名SHA256=$domainSha, 加速备用已禁用")
     }
     val testPrimaryUnavailable = isTestPrimaryUrlUnavailableEnabled(context)
     val accelerateUrl = readAccelerateUrl(context)
@@ -352,6 +355,8 @@ internal suspend fun fetchSubscriptionWithFallback(
         // HTTP errors do not trigger fallback.
         if (primary.statusCode !in 200..299) return primary
         return primary
+    } catch (ce: CancellationException) {
+        throw ce
     } catch (primaryEx: Exception) {
         val err = primaryEx.message ?: "Unknown error"
         Log.w(TAG, "[CONFIG_LOAD] 主URL异常: $err, 检查回落条件")
@@ -366,9 +371,11 @@ internal suspend fun fetchSubscriptionWithFallback(
     }
 
     val accUrl = buildAcceleratedUrl(url, accelerateUrl)
-    Log.i(TAG, "[CONFIG_LOAD] 主URL失败, 尝试加速回落: $accUrl, 原因: $primaryError")
+    Log.i(TAG, "[CONFIG_LOAD] 主URL失败, 尝试加速回落: ${summarizeAccelerateUrl(accUrl)}, 原因: $primaryError")
     return try {
         fetchConfig(accUrl, userAgent)
+    } catch (ce: CancellationException) {
+        throw ce
     } catch (accEx: Exception) {
         val accError = accEx.message ?: "Unknown error"
         throw IllegalStateException("primary=$primaryError accelerated=$accError")
@@ -385,6 +392,7 @@ internal suspend fun fetchSubscriptionWithFallback(
  *   3. Return result with method info
  * HTTP errors (non-2xx) do NOT trigger fallback.
  * Test mode: actively throws on primary URL to test fallback path.
+ * Cancellation is rethrown — it must never trigger accelerator fallback.
  */
 internal suspend fun executeRefreshWith(
     context: Context,
@@ -399,7 +407,7 @@ internal suspend fun executeRefreshWith(
     val domainSha = sha256Hex(host)
     val verified  = verifyDomain(host, context)
     if (!verified) {
-        Log.w(TAG, "[CONFIG_LOAD] 域名未验证: SHA256=$domainSha, 加速备用已禁用")
+        Log.w(TAG, "[CONFIG_LOAD] 方式=DOMAIN_UNVERIFIED, 域名SHA256=$domainSha, 加速备用已禁用")
     }
     val testPrimaryUnavailable = isTestPrimaryUrlUnavailableEnabled(context)
     val accelerateUrl = readAccelerateUrl(context)
@@ -419,7 +427,7 @@ internal suspend fun executeRefreshWith(
 
         if (fetchResult.statusCode < 200 || fetchResult.statusCode >= 300) {
             // HTTP error — do not fall back, return error
-            Log.w(TAG, "[CONFIG_LOAD] 主URL返回HTTP ${fetchResult.statusCode}, 不触发回落")
+            Log.w(TAG, "[CONFIG_LOAD] 方式=HTTP_ERROR_NO_FALLBACK, HTTP ${fetchResult.statusCode}, 不触发回落")
             return ConfigRefreshResult(
                 status    = "failed",
                 error     = "HTTP ${fetchResult.statusCode}",
@@ -431,7 +439,7 @@ internal suspend fun executeRefreshWith(
 
         val headerValue = fetchResult.headers["subscription-userinfo"]
         val info = parseUserinfo(headerValue)
-        Log.i(TAG, "[CONFIG_LOAD] 主URL成功: 上传=${info.upload}, 下载=${info.download}, 总计=${info.total}, 过期=${info.expire}")
+        Log.i(TAG, "[CONFIG_LOAD] 方式=PRIMARY, 上传=${info.upload}, 下载=${info.download}, 总计=${info.total}, 过期=${info.expire}")
         return ConfigRefreshResult(
             status             = "success",
             content            = fetchResult.body,
@@ -444,6 +452,8 @@ internal suspend fun executeRefreshWith(
             subscriptionUserinfoHeader = headerValue,
             method             = "primary",
         )
+    } catch (ce: CancellationException) {
+        throw ce
     } catch (primaryEx: Exception) {
         val err = primaryEx.message ?: "Unknown error"
         Log.w(TAG, "[CONFIG_LOAD] 主URL异常: $err, 检查回落条件")
@@ -454,7 +464,7 @@ internal suspend fun executeRefreshWith(
     // This code executes when either test mode is enabled or primary fetch failed
     if (!verified) {
         val durationMs = System.currentTimeMillis() - start
-        Log.w(TAG, "[CONFIG_LOAD] 回落被禁用: 域名未验证 (SHA256=$domainSha), 主URL原因: $primaryError")
+        Log.w(TAG, "[CONFIG_LOAD] 方式=ACCELERATOR_SKIPPED, 原因=域名未验证 (SHA256=$domainSha), 主URL原因: $primaryError")
         return ConfigRefreshResult(
             status    = "failed",
             error     = primaryError,
@@ -466,7 +476,7 @@ internal suspend fun executeRefreshWith(
 
     if (accelerateUrl.isNullOrBlank()) {
         val durationMs = System.currentTimeMillis() - start
-        Log.w(TAG, "[CONFIG_LOAD] 回落被禁用: 加速URL未配置, 主URL原因: $primaryError")
+        Log.w(TAG, "[CONFIG_LOAD] 方式=ACCELERATOR_UNAVAILABLE, 原因=加速URL未配置, 主URL原因: $primaryError")
         return ConfigRefreshResult(
             status    = "failed",
             error     = primaryError,
@@ -477,7 +487,7 @@ internal suspend fun executeRefreshWith(
     }
 
     val accUrl = buildAcceleratedUrl(url, accelerateUrl)
-    Log.i(TAG, "[CONFIG_LOAD] 主URL失败, 尝试加速回落: $accUrl, 原因: $primaryError")
+    Log.i(TAG, "[CONFIG_LOAD] 主URL失败, 尝试加速回落: ${summarizeAccelerateUrl(accUrl)}, 原因: $primaryError")
 
     return try {
         val fetchResult = fetchConfig(accUrl, userAgent)
@@ -485,7 +495,7 @@ internal suspend fun executeRefreshWith(
 
         if (fetchResult.statusCode < 200 || fetchResult.statusCode >= 300) {
             val accError = "HTTP ${fetchResult.statusCode}"
-            Log.e(TAG, "[CONFIG_LOAD] 加速URL也失败: $accError (主URL: $primaryError)")
+            Log.e(TAG, "[CONFIG_LOAD] 方式=BOTH_FAILED, 加速原因=$accError, 主URL原因=$primaryError")
             ConfigRefreshResult(
                 status    = "failed",
                 error     = "primary=$primaryError accelerated=$accError",
@@ -496,8 +506,8 @@ internal suspend fun executeRefreshWith(
             )
         } else {
             val headerValue = fetchResult.headers["subscription-userinfo"]
-            Log.i(TAG, "[CONFIG_LOAD] 加速回落成功: subscription-userinfo=$headerValue")
             val info = parseUserinfo(headerValue)
+            Log.i(TAG, "[CONFIG_LOAD] 方式=FALLBACK_ACCELERATOR, 上传=${info.upload}, 下载=${info.download}, 总计=${info.total}, 过期=${info.expire}")
             ConfigRefreshResult(
                 status             = "success",
                 content            = fetchResult.body,
@@ -512,10 +522,12 @@ internal suspend fun executeRefreshWith(
                 actualUrl          = accUrl,
             )
         }
+    } catch (ce: CancellationException) {
+        throw ce
     } catch (accEx: Exception) {
         val durationMs = System.currentTimeMillis() - start
         val accError   = accEx.message ?: "Unknown error"
-        Log.e(TAG, "[CONFIG_LOAD] 加速回落也失败: $accError (主URL: $primaryError)")
+        Log.e(TAG, "[CONFIG_LOAD] 方式=BOTH_FAILED, 加速原因=$accError, 主URL原因=$primaryError")
         ConfigRefreshResult(
             status    = "failed",
             error     = "primary=$primaryError accelerated=$accError",
