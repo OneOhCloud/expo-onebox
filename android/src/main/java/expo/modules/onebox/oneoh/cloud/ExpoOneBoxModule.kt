@@ -35,23 +35,16 @@ import expo.modules.onebox.oneoh.cloud.helper.GROUP_AUTO
 import expo.modules.onebox.oneoh.cloud.helper.GROUP_EXIT_GATEWAY
 import expo.modules.onebox.oneoh.cloud.helper.ProxyGroupSnapshot
 import expo.modules.onebox.oneoh.cloud.helper.parseExitGatewayGroups
-import io.nekohasekai.libbox.CommandClientHandler
-import io.nekohasekai.libbox.CommandClientOptions
-import io.nekohasekai.libbox.ConnectionEvents
 import io.nekohasekai.libbox.Libbox
 import io.nekohasekai.libbox.LogEntry
-import io.nekohasekai.libbox.LogIterator
 import io.nekohasekai.libbox.OutboundGroup
-import io.nekohasekai.libbox.OutboundGroupIterator
 import io.nekohasekai.libbox.SetupOptions
 import io.nekohasekai.libbox.StatusMessage
-import io.nekohasekai.libbox.StringIterator
 import io.nekohasekai.sfa.utils.CommandClient
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.GlobalScope
 import org.json.JSONObject
 import java.io.File
-import java.util.concurrent.atomic.AtomicBoolean
 
 // SharedPreferences keys mirrored into the background worker's store.
 // Canonical home is BackgroundConfigWorker.kt (alongside KEY_ACCELERATE_URL);
@@ -457,11 +450,6 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
             Log.d(TAG, "服务停止命令已发送")
         }
 
-        // ---- getProxyNodes: 通过 libbox CommandClient IPC 获取 ExitGateway 节点列表 ----
-        AsyncFunction("getProxyNodes") { promise: Promise ->
-            queryProxyNodes(promise)
-        }
-
         // ---- triggerURLTest: 触发 URLTest (单节点 tag 或 group tag 如 "ExitGateway") ----
         AsyncFunction("triggerURLTest") { tag: String ->
             try {
@@ -715,8 +703,8 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
 
     /**
      * Adapt a libbox outbound-group iterator into plain snapshots for the pure
-     * reducer `parseExitGatewayGroups` (helper/ExitGatewayParse.kt). Shared by the
-     * live status monitor and the one-shot getProxyNodes query (audit C2 / Batch 3).
+     * reducer `parseExitGatewayGroups` (helper/ExitGatewayParse.kt). Consumed by
+     * the live status monitor's group updates (audit C2 / Batch 3).
      */
     private fun snapshotGroups(groups: Iterator<OutboundGroup>): List<ProxyGroupSnapshot> {
         val out = mutableListOf<ProxyGroupSnapshot>()
@@ -730,73 +718,6 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
             out.add(ProxyGroupSnapshot(group.tag, group.selected ?: "", items))
         }
         return out
-    }
-
-    /**
-     * One-shot IPC query for the current ExitGateway node list. Connects a
-     * throwaway libbox CommandClient, resolves the promise on the first group
-     * update (or on disconnect / 5s timeout), and tears the client down.
-     */
-    private fun queryProxyNodes(promise: Promise) {
-        val settled = AtomicBoolean(false)
-        var rawClient: io.nekohasekai.libbox.CommandClient? = null
-
-        val options = CommandClientOptions()
-        options.addCommand(Libbox.CommandGroup)
-
-        val handler = object : CommandClientHandler {
-            private fun settle(all: List<Map<String, Any>>, now: String, autoNow: String) {
-                if (settled.compareAndSet(false, true)) {
-                    rawClient?.runCatching { disconnect() }
-                    promise.resolve(mapOf("all" to all, "now" to now, "autoNow" to autoNow))
-                }
-            }
-
-            override fun connected() {}
-
-            override fun disconnected(message: String?) {
-                settle(emptyList(), "", "")
-            }
-
-            override fun writeGroups(message: OutboundGroupIterator?) {
-                val groups = object : Iterator<OutboundGroup> {
-                    override fun hasNext() = message?.hasNext() == true
-                    override fun next() = message!!.next()
-                }
-                val (all, now, autoNow) = parseExitGatewayGroups(snapshotGroups(groups))
-                settle(all, now, autoNow)
-            }
-
-            override fun writeStatus(message: StatusMessage?) {}
-            override fun writeLogs(messageList: LogIterator?) {}
-            override fun clearLogs() {}
-            override fun setDefaultLogLevel(level: Int) {}
-            override fun initializeClashMode(modeList: StringIterator?, currentMode: String?) {}
-            override fun updateClashMode(newMode: String?) {}
-            override fun writeConnectionEvents(events: ConnectionEvents?) {}
-        }
-
-        val client = io.nekohasekai.libbox.CommandClient(handler, options)
-        rawClient = client
-
-        // 5 秒超时保护
-        Handler(Looper.getMainLooper()).postDelayed({
-            if (settled.compareAndSet(false, true)) {
-                client.runCatching { disconnect() }
-                promise.resolve(mapOf("all" to emptyList<Map<String, Any>>(), "now" to "", "autoNow" to ""))
-            }
-        }, 5000)
-
-        // 在后台线程中连接
-        Thread {
-            try {
-                client.connect()
-            } catch (e: Exception) {
-                if (settled.compareAndSet(false, true)) {
-                    promise.resolve(mapOf("all" to emptyList<Map<String, Any>>(), "now" to "", "autoNow" to ""))
-                }
-            }
-        }.start()
     }
 
 }

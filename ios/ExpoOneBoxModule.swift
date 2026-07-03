@@ -173,39 +173,6 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
             return self.readLastStartConfig()
         }
 
-        // Query the libbox CommandServer (in the Network Extension) for the
-        // ExitGateway selector group — returns { all: [String], now: String }.
-        // Uses LibboxCommandClient + LibboxCommandGroup subscription.
-        AsyncFunction("getProxyNodes") { () async throws -> [String: Any] in
-            return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<[String: Any], Error>) in
-                let handler = OneShotGroupQueryHandler(continuation: continuation)
-
-                let options = LibboxCommandClientOptions()
-                options.addCommand(LibboxCommandGroup)
-
-                guard let client = LibboxNewCommandClient(handler, options) else {
-                    continuation.resume(throwing: NSError(
-                        domain: "ExpoOneBox", code: -1,
-                        userInfo: [NSLocalizedDescriptionKey: "Failed to create CommandClient"]))
-                    return
-                }
-                handler.client = client
-
-                // Timeout after 5 s in case CommandServer is not ready
-                DispatchQueue.global().asyncAfter(deadline: .now() + 5) {
-                    handler.timeout()
-                }
-
-                DispatchQueue.global(qos: .utility).async {
-                    do {
-                        try client.connect()
-                    } catch {
-                        handler.fail(error)
-                    }
-                }
-            }
-        }
-
         // Trigger URLTest for a specific outbound tag or group tag (e.g. "ExitGateway").
         AsyncFunction("triggerURLTest") { (tag: String) async -> Bool in
             return await Task.detached(priority: .userInitiated) {
