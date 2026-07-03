@@ -284,6 +284,62 @@ struct BackgroundConfigRefresh {
     /// actively throws to simulate real network failure for fallback testing.
     ///
     /// Cancellation never triggers accelerator fallback.
+    /// Outcome of the shared [fetchWithFallback] control flow (audit D3c-01 / C4).
+    enum FallbackOutcome {
+        /// A primary result (any HTTP status) or a successful accelerated fetch.
+        case ok(result: ConfigFetchResult, method: String, actualUrl: String, primaryError: String?)
+        /// The primary threw a network error and fallback was skipped.
+        case noFallback(primaryError: String, reason: String) // "unverified" | "no-accelerator"
+        /// The primary threw and the accelerated fetch also threw.
+        case bothFailed(primaryError: String, accError: String, accUrl: String)
+        /// The task was cancelled after the primary attempt — never falls back.
+        case cancelled
+    }
+
+    /// The primary → gate → accelerator control flow, extracted so the foreground
+    /// [fetchProfileConfigWithFallback] and the background [executeRefreshWith]
+    /// share one copy instead of two (audit D3c-01 / C4). `fetch`/`log` are
+    /// injected so the decision is exercised without a network or NSLog in the
+    /// host runner. HTTP errors return as the primary `.ok` (non-2xx never falls
+    /// back); only a network throw runs the gate; cancellation is `.cancelled`.
+    /// The decision table matches `golden/fetch-fallback-decision.json` (mirrored
+    /// on Android by FetchWithFallbackTest and on JS by the golden test).
+    static func fetchWithFallback(
+        parsedURL: URL,
+        userAgent: String,
+        verified: Bool,
+        testPrimaryUnavailable: Bool,
+        accelerateUrl: String?,
+        fetch: (URL, String) async throws -> ConfigFetchResult = { try await ConfigFetcher.fetch(url: $0, userAgent: $1) },
+        log: (String) -> Void = { NSLog("%@", $0) }
+    ) async -> FallbackOutcome {
+        var primaryError = ""
+        do {
+            if testPrimaryUnavailable {
+                log("[CONFIG_LOAD] 测试模式=PRIMARY_UNAVAILABLE, 主地址主动抛出异常")
+                throw ExpoOneBoxError.testModePrimaryUnavailable
+            }
+            // HTTP errors do not trigger fallback — the primary response is returned as-is.
+            return .ok(result: try await fetch(parsedURL, userAgent), method: "primary", actualUrl: parsedURL.absoluteString, primaryError: nil)
+        } catch {
+            primaryError = error.localizedDescription
+        }
+
+        if Task.isCancelled { return .cancelled }
+        if !verified { return .noFallback(primaryError: primaryError, reason: "unverified") }
+        guard let accBase = accelerateUrl,
+              let accURL  = buildAcceleratedURL(from: parsedURL, accelerateBase: accBase) else {
+            return .noFallback(primaryError: primaryError, reason: "no-accelerator")
+        }
+
+        log("[CONFIG_LOAD] 方式=FALLBACK_TRY, 原因=\(primaryError), 加速URL=\(summarizeAccelerateUrl(accURL.absoluteString))")
+        do {
+            return .ok(result: try await fetch(accURL, userAgent), method: "fallback", actualUrl: accURL.absoluteString, primaryError: primaryError)
+        } catch {
+            return .bothFailed(primaryError: primaryError, accError: error.localizedDescription, accUrl: accURL.absoluteString)
+        }
+    }
+
     static func fetchProfileConfigWithFallback(
         url: String,
         userAgent: String
@@ -300,42 +356,17 @@ struct BackgroundConfigRefresh {
         }
         let (testPrimaryUnavailable, accelerateUrl) = readRefreshSwitches(context: "fetchProfileConfig")
 
-        var primaryError = ""
-        do {
-            if testPrimaryUnavailable {
-                NSLog("[CONFIG_LOAD] 测试模式=PRIMARY_UNAVAILABLE, 主地址主动抛出异常")
-                throw ExpoOneBoxError.testModePrimaryUnavailable
-            }
-
-            // HTTP errors do not trigger fallback — the primary response is returned as-is.
-            return try await ConfigFetcher.fetch(url: parsedURL, userAgent: userAgent)
-        } catch {
-            primaryError = error.localizedDescription
-        }
-
-        if Task.isCancelled {
+        switch await fetchWithFallback(parsedURL: parsedURL, userAgent: userAgent, verified: verified,
+                                       testPrimaryUnavailable: testPrimaryUnavailable, accelerateUrl: accelerateUrl) {
+        case .ok(let result, _, _, _):
+            return result
+        case .cancelled:
             NSLog("[CONFIG_LOAD] 方式=CANCELLED, 不触发回落")
             throw CancellationError()
-        }
-
-        if !verified {
+        case .noFallback(let primaryError, _):
             throw ExpoOneBoxError.primaryFailed(primaryError)
-        }
-
-        guard let accBase = accelerateUrl,
-              let accURL  = buildAcceleratedURL(from: parsedURL, accelerateBase: accBase) else {
-            throw ExpoOneBoxError.primaryFailed(primaryError)
-        }
-
-        // The attempt uses a distinct FALLBACK_TRY token; FALLBACK_ACCELERATOR is
-        // reserved for the successful result (with traffic fields), matching Android
-        // (audit D3c-13). The foreground path returns the raw result, so it logs
-        // only the attempt.
-        NSLog("[CONFIG_LOAD] 方式=FALLBACK_TRY, 原因=%@, 加速URL=%@", primaryError, summarizeAccelerateUrl(accURL.absoluteString))
-        do {
-            return try await ConfigFetcher.fetch(url: accURL, userAgent: userAgent)
-        } catch {
-            throw ExpoOneBoxError.bothFailed(primary: primaryError, accelerated: error.localizedDescription)
+        case .bothFailed(let primaryError, let accError, _):
+            throw ExpoOneBoxError.bothFailed(primary: primaryError, accelerated: accError)
         }
     }
 
@@ -363,131 +394,62 @@ struct BackgroundConfigRefresh {
         }
         let (testPrimaryUnavailable, accelerateUrl) = readRefreshSwitches(context: "executeRefresh")
 
-        // ── Try primary URL ───────────────────────────────────────────────────
-        var primaryError = ""
+        // The primary → gate → accelerator control flow is shared with
+        // fetchProfileConfigWithFallback (audit D3c-01); this only interprets the
+        // outcome into a ConfigRefreshResult + CONFIG_LOAD diagnostics.
+        func ms() -> Int64 { Int64(Date().timeIntervalSince(start) * 1000) }
 
-        do {
-            if testPrimaryUnavailable {
-                NSLog("[CONFIG_LOAD] 测试模式=PRIMARY_UNAVAILABLE, 主地址主动抛出异常")
-                throw ExpoOneBoxError.testModePrimaryUnavailable
-            }
-
-            let result = try await ConfigFetcher.fetch(url: parsedURL, userAgent: userAgent)
-            let durationMs = Int64(Date().timeIntervalSince(start) * 1000)
-
-            guard result.statusCode >= 200 && result.statusCode < 300 else {
+        switch await fetchWithFallback(parsedURL: parsedURL, userAgent: userAgent, verified: verified,
+                                       testPrimaryUnavailable: testPrimaryUnavailable, accelerateUrl: accelerateUrl) {
+        case .ok(let result, let method, let actualUrl, let primaryError):
+            let ok2xx = result.statusCode >= 200 && result.statusCode < 300
+            if method == "primary" && !ok2xx {
                 // HTTP error — do not fall back
+                return .failed(error: "HTTP \(result.statusCode)", method: "primary", timestamp: isoStart, durationMs: ms())
+            } else if method == "primary" {
+                NSLog("[CONFIG_LOAD] 方式=PRIMARY")
+                let headerValue = result.headers["subscription-userinfo"]
+                let info = parseUserinfo(headerValue)
+                return ConfigRefreshResult(
+                    status: "success", content: result.body,
+                    profileUpload: info.upload, profileDownload: info.download,
+                    profileTotal: info.total, profileExpire: info.expire,
+                    timestamp: isoStart, durationMs: ms(),
+                    profileUserinfoHeader: headerValue, method: "primary"
+                )
+            } else if !ok2xx {
+                NSLog("[CONFIG_LOAD] 方式=BOTH_FAILED, 主地址原因=%@, 加速地址原因=HTTP %d", primaryError ?? "", result.statusCode)
                 return .failed(
-                    error: "HTTP \(result.statusCode)",
-                    method: "primary",
-                    timestamp: isoStart,
-                    durationMs: durationMs
+                    error: "primary=\(primaryError ?? "") accelerated=HTTP \(result.statusCode)",
+                    method: "fallback", timestamp: isoStart, durationMs: ms(), actualUrl: actualUrl
+                )
+            } else {
+                let headerValue = result.headers["subscription-userinfo"]
+                let info = parseUserinfo(headerValue)
+                NSLog("[CONFIG_LOAD] 方式=FALLBACK_ACCELERATOR, 上传=%lld, 下载=%lld, 总计=%lld, 过期=%lld", info.upload, info.download, info.total, info.expire)
+                return ConfigRefreshResult(
+                    status: "success", content: result.body,
+                    profileUpload: info.upload, profileDownload: info.download,
+                    profileTotal: info.total, profileExpire: info.expire,
+                    timestamp: isoStart, durationMs: ms(),
+                    profileUserinfoHeader: headerValue, method: "fallback", actualUrl: actualUrl
                 )
             }
-
-            NSLog("[CONFIG_LOAD] 方式=PRIMARY")
-            let headerValue = result.headers["subscription-userinfo"]
-            let info = parseUserinfo(headerValue)
-            return ConfigRefreshResult(
-                status: "success",
-                content: result.body,
-                profileUpload: info.upload,
-                profileDownload: info.download,
-                profileTotal: info.total,
-                profileExpire: info.expire,
-                timestamp: isoStart,
-                durationMs: durationMs,
-                profileUserinfoHeader: headerValue,
-                method: "primary"
-            )
-        } catch {
-            // Network-level failure — try accelerated URL only for verified domains
-            primaryError = error.localizedDescription
-        }
-
-        if Task.isCancelled {
-            let durationMs = Int64(Date().timeIntervalSince(start) * 1000)
+        case .cancelled:
             NSLog("[CONFIG_LOAD] 方式=CANCELLED, 不触发回落")
-            return .failed(
-                error: "CANCELLED",
-                method: "primary",
-                timestamp: isoStart,
-                durationMs: durationMs
-            )
-        }
-
-        // ── Fallback to accelerated URL ───────────────────────────────────────
-        if !verified {
-            let durationMs = Int64(Date().timeIntervalSince(start) * 1000)
-            NSLog("[CONFIG_LOAD] 方式=ACCELERATOR_SKIPPED, 原因=域名未验证, 主地址原因=%@", primaryError)
-            return .failed(
-                error: primaryError,
-                method: "primary",
-                timestamp: isoStart,
-                durationMs: durationMs
-            )
-        }
-
-        guard let accBase = accelerateUrl,
-              let accURL  = buildAcceleratedURL(from: parsedURL, accelerateBase: accBase) else {
-            let durationMs = Int64(Date().timeIntervalSince(start) * 1000)
-            NSLog("[CONFIG_LOAD] 方式=ACCELERATOR_UNAVAILABLE, 原因=未配置或构建失败")
-            return .failed(
-                error: primaryError,
-                method: "primary",
-                timestamp: isoStart,
-                durationMs: durationMs
-            )
-        }
-
-        // NOTE: iOS emits FALLBACK_ACCELERATOR here — when the accelerated fetch
-        // Distinct FALLBACK_TRY token for the attempt; the FALLBACK_ACCELERATOR
-        // token below is the successful result (with traffic fields), matching
-        // Android's single emit (audit D3c-13).
-        NSLog("[CONFIG_LOAD] 方式=FALLBACK_TRY, 原因=%@, 加速URL=%@", primaryError, summarizeAccelerateUrl(accURL.absoluteString))
-
-        // ── Try accelerated URL ───────────────────────────────────────────
-        do {
-            let accResult  = try await ConfigFetcher.fetch(url: accURL, userAgent: userAgent)
-            let durationMs = Int64(Date().timeIntervalSince(start) * 1000)
-
-            guard accResult.statusCode >= 200 && accResult.statusCode < 300 else {
-                NSLog("[CONFIG_LOAD] 方式=BOTH_FAILED, 主地址原因=%@, 加速地址原因=HTTP %d", primaryError, accResult.statusCode)
-                return .failed(
-                    error: "primary=\(primaryError) accelerated=HTTP \(accResult.statusCode)",
-                    method: "fallback",
-                    timestamp: isoStart,
-                    durationMs: durationMs,
-                    actualUrl: accURL.absoluteString
-                )
+            return .failed(error: "CANCELLED", method: "primary", timestamp: isoStart, durationMs: ms())
+        case .noFallback(let primaryError, let reason):
+            if reason == "unverified" {
+                NSLog("[CONFIG_LOAD] 方式=ACCELERATOR_SKIPPED, 原因=域名未验证, 主地址原因=%@", primaryError)
+            } else {
+                NSLog("[CONFIG_LOAD] 方式=ACCELERATOR_UNAVAILABLE, 原因=未配置或构建失败")
             }
-
-            let headerValue = accResult.headers["subscription-userinfo"]
-            let info = parseUserinfo(headerValue)
-            NSLog("[CONFIG_LOAD] 方式=FALLBACK_ACCELERATOR, 上传=%lld, 下载=%lld, 总计=%lld, 过期=%lld", info.upload, info.download, info.total, info.expire)
-            return ConfigRefreshResult(
-                status: "success",
-                content: accResult.body,
-                profileUpload: info.upload,
-                profileDownload: info.download,
-                profileTotal: info.total,
-                profileExpire: info.expire,
-                timestamp: isoStart,
-                durationMs: durationMs,
-                profileUserinfoHeader: headerValue,
-                method: "fallback",
-                actualUrl: accURL.absoluteString
-            )
-        } catch {
-            let durationMs = Int64(Date().timeIntervalSince(start) * 1000)
-            let accError   = error.localizedDescription
+            return .failed(error: primaryError, method: "primary", timestamp: isoStart, durationMs: ms())
+        case .bothFailed(let primaryError, let accError, let accUrl):
             NSLog("[CONFIG_LOAD] 方式=BOTH_FAILED, 主地址原因=%@, 加速地址原因=%@", primaryError, accError)
             return .failed(
                 error: "primary=\(primaryError) accelerated=\(accError)",
-                method: "fallback",
-                timestamp: isoStart,
-                durationMs: durationMs,
-                actualUrl: accURL.absoluteString
+                method: "fallback", timestamp: isoStart, durationMs: ms(), actualUrl: accUrl
             )
         }
     }
