@@ -44,18 +44,8 @@ export type TrafficUpdateEventPayload = {
   uplinkTotal: number;
   /** 累计下行 bytes */
   downlinkTotal: number;
-  /** 上行速度（格式化显示） */
-  uplinkDisplay: string;
-  /** 下行速度（格式化显示） */
-  downlinkDisplay: string;
-  /** 累计上行（格式化显示） */
-  uplinkTotalDisplay: string;
-  /** 累计下行（格式化显示） */
-  downlinkTotalDisplay: string;
   /** 内存使用 bytes */
   memory: number;
-  /** 内存使用（格式化显示） */
-  memoryDisplay: string;
   /** Go 协程数量 */
   goroutines: number;
   /** 入站连接数 */

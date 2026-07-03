@@ -704,12 +704,7 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
             "downlink": status.downlink,
             "uplinkTotal": status.uplinkTotal,
             "downlinkTotal": status.downlinkTotal,
-            "uplinkDisplay": LibboxFormatBytes(status.uplink) + "/s",
-            "downlinkDisplay": LibboxFormatBytes(status.downlink) + "/s",
-            "uplinkTotalDisplay": LibboxFormatBytes(status.uplinkTotal),
-            "downlinkTotalDisplay": LibboxFormatBytes(status.downlinkTotal),
             "memory": status.memory,
-            "memoryDisplay": LibboxFormatMemoryBytes(status.memory),
             "goroutines": Int(status.goroutines),
             "connectionsIn": Int(status.connectionsIn),
             "connectionsOut": Int(status.connectionsOut)

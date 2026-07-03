@@ -98,12 +98,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
                                 "downlink"            to status.downlink,
                                 "uplinkTotal"         to status.uplinkTotal,
                                 "downlinkTotal"       to status.downlinkTotal,
-                                "uplinkDisplay"       to (Libbox.formatBytes(status.uplink) + "/s"),
-                                "downlinkDisplay"     to (Libbox.formatBytes(status.downlink) + "/s"),
-                                "uplinkTotalDisplay"  to Libbox.formatBytes(status.uplinkTotal),
-                                "downlinkTotalDisplay" to Libbox.formatBytes(status.downlinkTotal),
                                 "memory"              to status.memory,
-                                "memoryDisplay"       to Libbox.formatBytes(status.memory),
                                 "goroutines"          to status.goroutines,
                                 "connectionsIn"       to status.connectionsIn,
                                 "connectionsOut"      to status.connectionsOut

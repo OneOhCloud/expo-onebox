@@ -67,18 +67,6 @@ const MOCK_DNS_LIST = ['8.8.8.8', '1.1.1.1', '9.9.9.9', '223.5.5.5'];
 // not a silent hand-sync.
 const WEB_STUB_SING_BOX_VERSION = '1.13.14';
 
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B/s`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB/s`;
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB/s`;
-}
-
-function formatBytesTotal(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-}
-
 class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
   private _status: number = VPN_STATUS.STOPPED;
   private _coreLogEnabled: boolean = false;
@@ -136,12 +124,7 @@ class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
         downlink,
         uplinkTotal: this._uplinkTotal,
         downlinkTotal: this._downlinkTotal,
-        uplinkDisplay: formatBytes(uplink),
-        downlinkDisplay: formatBytes(downlink),
-        uplinkTotalDisplay: formatBytesTotal(this._uplinkTotal),
-        downlinkTotalDisplay: formatBytesTotal(this._downlinkTotal),
         memory,
-        memoryDisplay: `${(memory / 1024 / 1024).toFixed(1)} MB`,
         goroutines: Math.floor(Math.random() * 30) + 20,
         connectionsIn: Math.floor(Math.random() * 10),
         connectionsOut: Math.floor(Math.random() * 20),
