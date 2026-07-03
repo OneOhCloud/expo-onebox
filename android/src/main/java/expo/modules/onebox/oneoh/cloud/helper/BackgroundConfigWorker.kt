@@ -291,13 +291,8 @@ private suspend fun verifyDomain(hostname: String, context: Context): Boolean {
     }
 }
 
-// MARK: - SHA256 + accelerated URL helpers
-
-private fun sha256Hex(input: String): String {
-    val digest = java.security.MessageDigest.getInstance("SHA-256")
-    return digest.digest(input.toByteArray(Charsets.UTF_8))
-        .joinToString("") { "%02x".format(it) }
-}
+// MARK: - accelerated URL helpers
+// (sha256Hex now lives in the shared pure core Sha256.kt — audit C4 / Batch 3)
 
 /** Build the accelerated variant: <accelerateBase>/<sha256(host)><path+query> */
 private fun buildAcceleratedUrl(originalUrl: String, accelerateBase: String): String {

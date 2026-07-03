@@ -1,0 +1,10 @@
+{
+  "_doc": "Cross-platform golden samples for the lowercase-hex SHA-256 of a UTF-8 string (audit C4 / D3c). This is the domain routing-key hash used by the fallback fetch path. One runner per language asserts its implementation against this single file: JS sha256Hex (src/utils/domain-suffix.ts), Kotlin sha256Hex (android .../helper/ConfigFetcher.kt) and Swift sha256HexString (ios/core/Sha256.swift). SHA-256 is a standard algorithm, so all correct implementations agree exactly — this locks the UTF-8 encoding and lowercase-hex formatting so a subtle change (encoding, casing, truncation) on any one platform is caught.",
+  "cases": [
+    { "input": "", "hex": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" },
+    { "input": "example.com", "hex": "a379a6f6eeafb9a55e378c118034e2751e682fab9f2d30ab13d2125586ce1947" },
+    { "input": "a.test", "hex": "52dcf5eeb77a59de2eb7221158d2316a1fce8c55c61ee02f63f378d048feed6c" },
+    { "input": "suffix.example", "hex": "6d1c3e7a9bc2509c4c3f80f90907c52cbc1c06d67a11bba34858767b32a60b3c" },
+    { "input": "OneBox测试", "hex": "9d5a2270d7f327483f51713c4e8820e0077de581188a18ed7106a9bc0f17427e" }
+  ]
+}

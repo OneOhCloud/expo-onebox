@@ -1,4 +1,3 @@
-import CryptoKit
 import Foundation
 import Network
 
@@ -32,14 +31,6 @@ private enum ConfigFetcherError: Error, LocalizedError {
         case .tooManyRedirects:           return "Too many redirects"
         }
     }
-}
-
-// MARK: - Shared SHA256 hex
-
-/// Lowercase hex of SHA256(string). Single source for the domain routing key
-/// (BackgroundConfigRefresh) and the short host digest used in logs below.
-func sha256HexString(_ string: String) -> String {
-    SHA256.hash(data: Data(string.utf8)).map { String(format: "%02x", $0) }.joined()
 }
 
 // MARK: - ConfigFetcher

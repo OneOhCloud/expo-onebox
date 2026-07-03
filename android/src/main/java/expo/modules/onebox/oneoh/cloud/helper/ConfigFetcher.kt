@@ -69,12 +69,7 @@ private fun systemDefaultTrustManager(): X509TrustManager {
 }
 
 /** Short host digest for logs — the hostname is user profile data. */
-private fun hostHash8(host: String): String {
-    val digest = java.security.MessageDigest.getInstance("SHA-256")
-    return digest.digest(host.toByteArray(Charsets.UTF_8))
-        .joinToString("") { "%02x".format(it) }
-        .take(8)
-}
+private fun hostHash8(host: String): String = sha256Hex(host).take(8)
 
 private class SNISocketFactory(
     private val delegate: SSLSocketFactory,
