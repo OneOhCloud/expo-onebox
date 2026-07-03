@@ -31,6 +31,10 @@ import expo.modules.onebox.oneoh.cloud.helper.findBestDnsServer
 import expo.modules.onebox.oneoh.cloud.helper.getWorkingDir
 import expo.modules.onebox.oneoh.cloud.helper.executeRefreshWith
 import expo.modules.onebox.oneoh.cloud.helper.processConfig
+import expo.modules.onebox.oneoh.cloud.helper.GROUP_AUTO
+import expo.modules.onebox.oneoh.cloud.helper.GROUP_EXIT_GATEWAY
+import expo.modules.onebox.oneoh.cloud.helper.ProxyGroupSnapshot
+import expo.modules.onebox.oneoh.cloud.helper.parseExitGatewayGroups
 import io.nekohasekai.libbox.CommandClientHandler
 import io.nekohasekai.libbox.CommandClientOptions
 import io.nekohasekai.libbox.ConnectionEvents
@@ -116,7 +120,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
                 }
                 override fun updateGroups(newGroups: MutableList<OutboundGroup>) {
                     try {
-                        val (all, now, autoNow) = parseExitGatewayGroups(newGroups.iterator())
+                        val (all, now, autoNow) = parseExitGatewayGroups(snapshotGroups(newGroups.iterator()))
                         sendEvent("onGroupUpdate", mapOf("all" to all, "now" to now, "autoNow" to autoNow))
                     } catch (_: Exception) {}
                 }
@@ -130,9 +134,6 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
         lateinit var application: Application
         const val VPN_REQUEST_CODE = 1001
         const val BATTERY_OPT_REQUEST_CODE = 1002
-
-        const val GROUP_EXIT_GATEWAY = "ExitGateway"
-        const val GROUP_AUTO = "auto"
 
         @Volatile var currentStatus: Status = Status.Stopped
         @Volatile var isStartingUp: Boolean = false
@@ -711,31 +712,22 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
     }
 
     /**
-     * Parse an outbound-group stream into the (nodes, selected, autoSelected)
-     * shape the JS layer consumes. Shared by the live status monitor and the
-     * one-shot getProxyNodes query so the ExitGateway/auto extraction lives in
-     * a single place.
+     * Adapt a libbox outbound-group iterator into plain snapshots for the pure
+     * reducer `parseExitGatewayGroups` (helper/ExitGatewayParse.kt). Shared by the
+     * live status monitor and the one-shot getProxyNodes query (audit C2 / Batch 3).
      */
-    private fun parseExitGatewayGroups(
-        groups: Iterator<OutboundGroup>,
-    ): Triple<List<Map<String, Any>>, String, String> {
-        val all = mutableListOf<Map<String, Any>>()
-        var now = ""
-        var autoNow = ""
+    private fun snapshotGroups(groups: Iterator<OutboundGroup>): List<ProxyGroupSnapshot> {
+        val out = mutableListOf<ProxyGroupSnapshot>()
         for (group in groups) {
-            when (group.tag) {
-                GROUP_EXIT_GATEWAY -> {
-                    now = group.selected ?: ""
-                    val items = group.getItems()
-                    while (items?.hasNext() == true) {
-                        val item = items.next()
-                        all.add(mapOf("tag" to item.tag, "delay" to item.urlTestDelay.toInt()))
-                    }
-                }
-                GROUP_AUTO -> autoNow = group.selected ?: ""
+            val items = mutableListOf<Pair<String, Int>>()
+            val it = group.getItems()
+            while (it?.hasNext() == true) {
+                val item = it.next()
+                items.add(item.tag to item.urlTestDelay.toInt())
             }
+            out.add(ProxyGroupSnapshot(group.tag, group.selected ?: "", items))
         }
-        return Triple(all, now, autoNow)
+        return out
     }
 
     /**
@@ -769,7 +761,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
                     override fun hasNext() = message?.hasNext() == true
                     override fun next() = message!!.next()
                 }
-                val (all, now, autoNow) = parseExitGatewayGroups(groups)
+                val (all, now, autoNow) = parseExitGatewayGroups(snapshotGroups(groups))
                 settle(all, now, autoNow)
             }
 

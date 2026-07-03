@@ -1,0 +1,26 @@
+{
+  "_doc": "Cross-platform golden samples for the ExitGateway/auto outbound-group parse (audit C2 / D3c-05 / Batch 3). Kotlin (ExitGatewayParse.kt) and Swift (core/ExitGatewayParse.swift) both reduce a plain list of proxy-group snapshots into the { all, now, autoNow } shape the JS layer consumes: the 'ExitGateway' group's selected tag becomes `now` and its items become `all`; the 'auto' group's selected tag becomes `autoNow`; any other group is ignored. The libbox OutboundGroup iterator is adapted into these plain snapshots at each call site, so this pure reducer is what the two platforms must agree on. No JS implementation (JS receives the already-parsed onGroupUpdate payload).",
+  "cases": [
+    {
+      "name": "ExitGateway (now + items) alongside auto and an ignored group",
+      "groups": [
+        { "tag": "ExitGateway", "selected": "hk-01", "items": [ { "tag": "hk-01", "delay": 80 }, { "tag": "sg-01", "delay": 120 } ] },
+        { "tag": "auto", "selected": "hk-01", "items": [] },
+        { "tag": "other-group", "selected": "irrelevant", "items": [ { "tag": "x", "delay": 1 } ] }
+      ],
+      "expect": { "all": [ { "tag": "hk-01", "delay": 80 }, { "tag": "sg-01", "delay": 120 } ], "now": "hk-01", "autoNow": "hk-01" }
+    },
+    {
+      "name": "no ExitGateway group leaves all empty and now empty",
+      "groups": [
+        { "tag": "auto", "selected": "jp-01", "items": [] }
+      ],
+      "expect": { "all": [], "now": "", "autoNow": "jp-01" }
+    },
+    {
+      "name": "empty group list yields all defaults",
+      "groups": [],
+      "expect": { "all": [], "now": "", "autoNow": "" }
+    }
+  ]
+}

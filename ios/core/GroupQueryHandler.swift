@@ -3,35 +3,22 @@ import ExpoModulesCore
 
 // MARK: - Shared group-parse helpers
 
-/// Cross-layer group tag contract (see docs/claude/bridge-signature.md).
-/// A single source for these names so a rename does not need N call-site edits.
-let exitGatewayGroupTag = "ExitGateway"
-let autoGroupTag = "auto"
-
-/// Parses a libbox outbound-group iterator into the ExitGateway node list, the
-/// currently-selected ExitGateway node, and the auto group's selection.
-/// Shared by OneShotGroupQueryHandler here and TrafficMonitor.ClientHandler.
-func parseExitGatewayGroups(
-    _ iterator: any LibboxOutboundGroupIteratorProtocol
-) -> (all: [[String: Any]], now: String, autoNow: String) {
-    var all: [[String: Any]] = []
-    var now = ""
-    var autoNow = ""
+/// Adapts a libbox outbound-group iterator into plain snapshots for the pure
+/// reducer `parseExitGatewayGroups` (core/ExitGatewayParse.swift). The tag
+/// constants and the reducer live there so both stay libbox-free and testable
+/// (audit C2 / Batch 3).
+func snapshotGroups(_ iterator: any LibboxOutboundGroupIteratorProtocol) -> [ProxyGroupSnapshot] {
+    var out: [ProxyGroupSnapshot] = []
     while let group = iterator.next() {
-        if group.tag == exitGatewayGroupTag {
-            now = group.selected
-            if let items = group.getItems() {
-                while let item = items.next() {
-                    all.append(["tag": item.tag, "delay": Int(item.urlTestDelay)])
-                }
+        var items: [(tag: String, delay: Int)] = []
+        if let it = group.getItems() {
+            while let item = it.next() {
+                items.append((tag: item.tag, delay: Int(item.urlTestDelay)))
             }
-            continue
         }
-        if group.tag == autoGroupTag {
-            autoNow = group.selected
-        }
+        out.append(ProxyGroupSnapshot(tag: group.tag, selected: group.selected, items: items))
     }
-    return (all, now, autoNow)
+    return out
 }
 
 // MARK: - One-shot proxy group query handler
@@ -80,7 +67,7 @@ class OneShotGroupQueryHandler: NSObject, LibboxCommandClientHandlerProtocol, @u
 
     func writeGroups(_ message: (any LibboxOutboundGroupIteratorProtocol)?) {
         guard let message else { return }
-        let groups = parseExitGatewayGroups(message)
+        let groups = parseExitGatewayGroups(snapshotGroups(message))
         settle(.success(["all": groups.all, "now": groups.now, "autoNow": groups.autoNow]))
     }
 
