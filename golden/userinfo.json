@@ -1,0 +1,49 @@
+{
+  "_doc": "Cross-platform golden samples for the `subscription-userinfo` HTTP header parser (audit C6 / D3c-03). This single file is the language-agnostic contract that every implementation of the parser must satisfy: the JS reference (src/utils/profile-info.ts), the native Kotlin `parseUserinfo` (android .../helper/BackgroundConfigWorker.kt) and Swift `parseUserinfo` (ios/core/BackgroundConfigRefresh.swift). Each language has a minimal runner that loads THIS file and asserts its parser matches. Do not inline-copy these cases into a runner; extend them here.",
+  "fields": ["upload", "download", "total", "expire"],
+  "cases": [
+    {
+      "name": "standard quad",
+      "header": "upload=100; download=300; total=1000; expire=1735689600",
+      "expect": { "upload": 100, "download": 300, "total": 1000, "expire": 1735689600 }
+    },
+    {
+      "name": "order-independent and tolerant of extra whitespace/fields",
+      "header": "expire=1; total=2;   download=3; upload=4; foo=bar",
+      "expect": { "upload": 4, "download": 3, "total": 2, "expire": 1 }
+    },
+    {
+      "name": "a single present field, others default to 0",
+      "header": "upload=5",
+      "expect": { "upload": 5, "download": 0, "total": 0, "expire": 0 }
+    },
+    {
+      "name": "empty header string is all zeros",
+      "header": "",
+      "expect": { "upload": 0, "download": 0, "total": 0, "expire": 0 }
+    },
+    {
+      "name": "null / absent header is all zeros",
+      "header": null,
+      "expect": { "upload": 0, "download": 0, "total": 0, "expire": 0 }
+    },
+    {
+      "name": "left boundary is unanchored: `total=` matches inside `subtotal=` (shared quirk)",
+      "header": "subtotal=99; total=7",
+      "expect": { "upload": 0, "download": 0, "total": 99, "expire": 0 }
+    },
+    {
+      "name": "realistic multi-GB quota (100 GiB) is within the JS-safe integer range and parses identically on all platforms",
+      "header": "upload=1073741824; download=53687091200; total=107374182400; expire=1767225600",
+      "expect": { "upload": 1073741824, "download": 53687091200, "total": 107374182400, "expire": 1767225600 }
+    }
+  ],
+  "knownDivergences": [
+    {
+      "name": "unlimited marker total=2^64-1 overflows Int64 on native but not JS",
+      "header": "total=18446744073709551615",
+      "note": "Airports encode 'unlimited' as total=2^64-1. JS parseInt keeps a lossy float (> 1e19); Kotlin toLongOrNull / Swift Int64() overflow to 0. This split is NOT yet unified — it is a Batch 4 contract change (needs a shared 'unlimited' sentinel + device verification). Locked here so any accidental change to one side is caught.",
+      "expect": { "js": { "totalAtLeast": 1e19 }, "native": { "total": 0 } }
+    }
+  ]
+}
