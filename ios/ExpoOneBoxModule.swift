@@ -288,11 +288,6 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
             NSLog("[ExpoOneBox] Background config refresh registered (interval=\(intervalSeconds)s)")
         }
 
-        // Cancel the scheduled background refresh and clear the registered flag.
-        AsyncFunction("unregisterBackgroundConfigRefresh") { () async in
-            BackgroundConfigRefresh.cancelScheduled()
-        }
-
         // Execute a config refresh immediately (used from foreground / dev screen).
         // Uses the same DNS-resolved fetcher as the background task, with accelerator fallback.
         AsyncFunction("executeConfigRefreshNow") { (url: String, userAgent: String) async -> [String: Any] in

@@ -210,12 +210,6 @@ struct BackgroundConfigRefresh {
         }
     }
 
-    static func cancelScheduled() {
-        BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: taskIdentifier)
-        sharedDefaults?.set(false, forKey: kIsRegistered)
-        NSLog("[BackgroundConfigRefresh] Scheduled task cancelled")
-    }
-
     // MARK: - Persist configuration for native worker
 
     static func saveConfig(url: String, userAgent: String, intervalSeconds: Int) {

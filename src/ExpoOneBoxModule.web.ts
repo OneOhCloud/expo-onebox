@@ -42,6 +42,22 @@ export function buildMockUserinfoHeader(): string {
   return `upload=${upload}; download=${download}; total=${total}; expire=${expire}`;
 }
 
+// Submodule-local mirror of parseProfileUserinfo (src/utils/profile-info.ts). The
+// web stub ships inside the native submodule and must stay self-contained, so it
+// cannot import the parent helper. All copies (this one, the JS reference, the
+// Kotlin parseUserinfo, the Swift parseUserinfo) are locked to one language-agnostic
+// contract: src/modules/expo-onebox/golden/userinfo.json — order-independent,
+// missing field = 0, null header = all zeros. Keep this body equivalent to that
+// contract; changes go through the golden JSON, never inline.
+function parseProfileUserinfo(header: string | null) {
+  return {
+    upload: parseInt(header?.match(/upload=(\d+)/)?.[1] ?? '0', 10),
+    download: parseInt(header?.match(/download=(\d+)/)?.[1] ?? '0', 10),
+    total: parseInt(header?.match(/total=(\d+)/)?.[1] ?? '0', 10),
+    expire: parseInt(header?.match(/expire=(\d+)/)?.[1] ?? '0', 10),
+  };
+}
+
 const MOCK_DNS_LIST = ['8.8.8.8', '1.1.1.1', '9.9.9.9', '223.5.5.5'];
 
 // Bare MAJOR.MINOR.PATCH mirror of the native LibboxVersion(). Single source of
@@ -275,15 +291,7 @@ class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
   async executeConfigRefreshNow(url: string, _userAgent: string) {
     const body = buildMockConfigBody(url);
     const header = buildMockUserinfoHeader();
-    // Mirror of parseProfileUserinfo (src/utils/profile-info.ts) — kept inline so
-    // the submodule stays self-contained. Behaviour is locked by the golden
-    // sample in src/utils/profile-info.test.ts; keep the four copies in lockstep.
-    const info = {
-      upload: parseInt(header.match(/upload=(\d+)/)?.[1] ?? '0', 10),
-      download: parseInt(header.match(/download=(\d+)/)?.[1] ?? '0', 10),
-      total: parseInt(header.match(/total=(\d+)/)?.[1] ?? '0', 10),
-      expire: parseInt(header.match(/expire=(\d+)/)?.[1] ?? '0', 10),
-    };
+    const info = parseProfileUserinfo(header);
     return {
       status: 'success' as const,
       content: body,

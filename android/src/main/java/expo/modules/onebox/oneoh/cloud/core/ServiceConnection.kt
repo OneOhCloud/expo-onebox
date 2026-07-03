@@ -47,13 +47,8 @@ class ServiceConnection(
     }
 
     fun reconnect() {
-        try {
-            context.unbindService(this)
-        } catch (_: IllegalArgumentException) {
-        }
-        val intent = Intent(context, VPNService::class.java).setAction(Action.SERVICE)
-        context.bindService(intent, this, Context.BIND_AUTO_CREATE)
-        Log.d(TAG, "request reconnect to ${VPNService::class.java.simpleName}")
+        disconnect()
+        connect()
     }
 
     override fun onServiceConnected(name: ComponentName, binder: IBinder) {

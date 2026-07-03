@@ -23,6 +23,7 @@ import io.nekohasekai.libbox.PlatformInterface
 import io.nekohasekai.libbox.SystemProxyStatus
 import expo.modules.onebox.oneoh.cloud.helper.Action
 import expo.modules.onebox.oneoh.cloud.helper.Alert
+import expo.modules.onebox.oneoh.cloud.helper.getWorkingDir
 import expo.modules.onebox.oneoh.cloud.R
 import expo.modules.onebox.oneoh.cloud.helper.Status
 import kotlinx.coroutines.DelicateCoroutinesApi
@@ -76,7 +77,7 @@ class BoxService(
 
     /** Shared startup_error.txt — written on failure, cleared on success. */
     private val startupErrorFile: java.io.File
-        get() = java.io.File(service.getExternalFilesDir(null) ?: service.filesDir, "startup_error.txt")
+        get() = java.io.File(getWorkingDir(service), "startup_error.txt")
 
     private fun writeStartupError(message: String) {
         try { startupErrorFile.writeText(message) } catch (_: Exception) {}
@@ -110,13 +111,18 @@ class BoxService(
      */
     suspend fun startService(configContent: String) {
         try {
+            // Clear any error from a previous start so the file reflects only
+            // this attempt; write it on every failure path below so the JS layer
+            // (which reads startup_error.txt on the stop transition) surfaces it.
+            clearStartupError()
             val serverName = extractServerName(configContent)
-            
+
             withContext(Dispatchers.Main) {
                 notification.show(serverName, R.string.status_starting)
             }
 
             if (configContent.isBlank()) {
+                writeStartupError("[config] empty configuration")
                 stopAndAlert(Alert.EmptyConfiguration)
                 return
             }
@@ -153,6 +159,7 @@ class BoxService(
             notification.start()
         } catch (e: Exception) {
             Log.e(TAG, "[android] startService failed", e)
+            writeStartupError("[android] ${e.message ?: "unknown error"}")
             stopAndAlert(Alert.StartService, "[android] ${e.message}")
         }
     }

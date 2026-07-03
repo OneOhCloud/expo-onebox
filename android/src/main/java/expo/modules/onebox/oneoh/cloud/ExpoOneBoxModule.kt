@@ -159,7 +159,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
         application = app
         val baseDir = context.filesDir
         baseDir.mkdirs()
-        val workingDir = context.getExternalFilesDir(null) ?: getWorkingDir(context)
+        val workingDir = getWorkingDir(context)
         workingDir.mkdirs()
         val tempDir = context.cacheDir
         tempDir.mkdirs()

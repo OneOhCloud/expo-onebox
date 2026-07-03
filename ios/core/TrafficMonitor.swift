@@ -123,23 +123,7 @@ private class ClientHandler: NSObject, LibboxCommandClientHandlerProtocol {
 
     func writeGroups(_ message: (any LibboxOutboundGroupIteratorProtocol)?) {
         guard let message, let monitor else { return }
-        var all: [[String: Any]] = []
-        var now = ""
-        var autoNow = ""
-        while let group = message.next() {
-            if group.tag == "ExitGateway" {
-                now = group.selected
-                if let items = group.getItems() {
-                    while let item = items.next() {
-                        all.append(["tag": item.tag, "delay": Int(item.urlTestDelay)])
-                    }
-                }
-                continue
-            }
-            if group.tag == "auto" {
-                autoNow = group.selected
-            }
-        }
+        let (all, now, autoNow) = parseExitGatewayGroups(snapshotGroups(message))
         monitor.onGroupUpdate(all: all, now: now, autoNow: autoNow)
     }
 

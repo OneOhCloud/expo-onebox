@@ -190,7 +190,8 @@ internal suspend fun resolveHostname(hostname: String, dnsServer: String): Strin
             val serverAddr = InetSocketAddress(dnsServer, 53)
             socket.send(DatagramPacket(query, query.size, serverAddr))
 
-            val buf = ByteArray(512)
+            // 4096 to admit EDNS0-sized responses, matching the iOS receive buffer.
+            val buf = ByteArray(4096)
             val packet = DatagramPacket(buf, buf.size)
             socket.receive(packet)
 
@@ -225,6 +226,9 @@ internal fun parseFirstARecord(buf: ByteArray, length: Int, txID: Short): String
 
     val responseID = ((buf[0].toInt() and 0xFF) shl 8) or (buf[1].toInt() and 0xFF)
     if (responseID != (txID.toInt() and 0xFFFF)) throw IllegalStateException("Transaction ID mismatch")
+
+    // QR bit must be set (this is a response, not a query) — parity with iOS.
+    if ((buf[2].toInt() and 0x80) == 0) throw IllegalStateException("Not a DNS response (QR=0)")
 
     val rcode = buf[3].toInt() and 0x0F
     if (rcode != 0) throw IllegalStateException("DNS RCODE=$rcode")
