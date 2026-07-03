@@ -510,15 +510,8 @@ struct BackgroundConfigRefresh {
 
     /// Progressive suffix candidates, shortest first.
     ///   "a.b.c" -> ["c", "b.c", "a.b.c"]
-    private static func hostnameSuffixCandidates(_ hostname: String) -> [String] {
-        if hostname.isEmpty { return [] }
-        let parts = hostname.split(separator: ".").map(String.init)
-        var out: [String] = []
-        for i in stride(from: parts.count - 1, through: 0, by: -1) {
-            out.append(parts[i..<parts.count].joined(separator: "."))
-        }
-        return out
-    }
+    // hostnameSuffixCandidates now lives in the shared pure core
+    // core/DomainSuffix.swift (audit D3c-02), locked by golden/domain-suffix.json.
 
     /// Returns true iff any suffix of `hostname` (shortest first) hashes to
     /// an entry in the allowlist. Preference order:

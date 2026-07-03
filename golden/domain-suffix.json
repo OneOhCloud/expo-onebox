@@ -1,0 +1,11 @@
+{
+  "_doc": "Cross-platform golden samples for hostnameSuffixCandidates — the progressive-suffix list (shortest first) that the domain allowlist check hashes and matches (audit C2/D3c-02 · domain verification). One runner per language asserts its implementation against this single file: JS (src/utils/domain-suffix.ts), Kotlin (helper/DomainSuffix.kt), Swift (ios/core/DomainSuffix.swift). The `a..b` case pins the empty-segment behavior: JS/Kotlin split keeps empty segments, so Swift must split with omittingEmptySubsequences:false to agree — this golden catches that divergence.",
+  "cases": [
+    { "hostname": "a.b.c", "candidates": ["c", "b.c", "a.b.c"] },
+    { "hostname": "example.com", "candidates": ["com", "example.com"] },
+    { "hostname": "sub.example.co.uk", "candidates": ["uk", "co.uk", "example.co.uk", "sub.example.co.uk"] },
+    { "hostname": "single", "candidates": ["single"] },
+    { "hostname": "", "candidates": [] },
+    { "hostname": "a..b", "candidates": ["b", ".b", "a..b"] }
+  ]
+}

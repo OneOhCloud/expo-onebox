@@ -244,11 +244,8 @@ private const val VERIFIED_LIST_URL   = "https://www.sing-box.net/verified_subsc
  * Progressive suffix candidates, shortest first.
  *   "a.b.c" -> ["c", "b.c", "a.b.c"]
  */
-private fun hostnameSuffixCandidates(hostname: String): List<String> {
-    if (hostname.isEmpty()) return emptyList()
-    val parts = hostname.split('.')
-    return (parts.indices).reversed().map { parts.subList(it, parts.size).joinToString(".") }
-}
+// hostnameSuffixCandidates now lives in the shared pure core DomainSuffix.kt
+// (audit D3c-02), locked by golden/domain-suffix.json.
 
 /**
  * Returns true iff any suffix of [hostname] (shortest first) hashes to an
