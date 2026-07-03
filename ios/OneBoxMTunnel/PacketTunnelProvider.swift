@@ -5,7 +5,7 @@ import os.log
 
 private let logger = Logger(subsystem: "cloud.oneoh.networktools.tunnel", category: "PacketTunnel")
 
-/// Strictly follows sing-box-for-apple's ExtensionProvider pattern.
+/// 严格遵循 sing-box-for-apple 的 ExtensionProvider 模式。
 class PacketTunnelProvider: NEPacketTunnelProvider {
 
     private(set) var commandServer: LibboxCommandServer?
@@ -13,13 +13,12 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
     var tunnelOptions: [String: NSObject]?
     private var startOptionsURL: URL?
 
-    /// Timestamp captured in sleep() so wake() can tell how long the device idled.
+    /// 在 sleep() 中记录的时间戳，供 wake() 判断设备空闲了多久。
     private var sleepStartedAt: Date?
-    /// Only reset the network on wake when the device slept at least this long — a brief
-    /// screen toggle shouldn't tear down live transfers, but a long idle almost certainly
-    /// left the proxy sockets dead.
+    /// 仅当设备至少睡眠了这么久才在唤醒时重置网络——短暂的息屏不该中断
+    /// 进行中的传输，但长时间空闲几乎必然让 proxy socket 已失效。
     private static let wakeResetThreshold: TimeInterval = 20
-    /// Coalesce bursts of same-interface path updates into a single reset.
+    /// 把同一接口的成串 path 更新合并为单次重置。
     private static let networkResetDebounce: TimeInterval = 0.8
     private var lastNetworkResetAt: Date?
     private let networkResetLock = NSLock()
@@ -82,26 +81,25 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
 
 // MARK: - Shared startup error file
 
-    /// Path to the shared startup_error.txt in App Group
+    /// App Group 中共享 startup_error.txt 的路径
     private static var startupErrorFileURL: URL {
         FilePath.sharedDirectory.appendingPathComponent("startup_error.txt")
     }
 
-    /// Write a startup error message to the shared file so the main app can read it.
+    /// 把启动错误消息写入共享文件，供主 App 读取。
     private static func writeStartupError(_ message: String) {
         let url = startupErrorFileURL
         NSLog("Writing startup error to file: \(message)")
         try? message.write(to: url, atomically: true, encoding: .utf8)
     }
 
-    /// Clear the startup error file (called on successful start).
+    /// 清空启动错误文件（启动成功时调用）。
     private static func clearStartupError() {
         let url = startupErrorFileURL
         try? "".write(to: url, atomically: true, encoding: .utf8)
     }
 
-    /// Persist a startup failure to the shared file (so the main app can read it) and
-    /// return the matching error for the caller to `throw`.
+    /// 把启动失败持久化到共享文件（供主 App 读取），并返回对应错误供调用方 throw。
     private func failStartup(_ message: String) -> ExtensionStartupError {
         PacketTunnelProvider.writeStartupError(message)
         return ExtensionStartupError(message)
@@ -117,7 +115,7 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         logger.log("workingPath: \(workingPath)")
         logger.log("tempPath: \(tempPath)")
 
-        // Ensure directories exist before LibboxSetup
+        // 在 LibboxSetup 之前确保目录存在
         for dir in [FilePath.workingDirectory, FilePath.cacheDirectory] {
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         }
@@ -175,8 +173,8 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         }
         logger.log("Stderr redirected to: \(stderrPath)")
 
-        // Force-enable the memory limit so the system can reclaim resources under memory
-        // pressure, avoiding an unclean state after the extension is killed.
+        // 强制开启内存上限，让系统在内存压力下能回收资源，避免 extension 被杀后
+        // 残留不干净的状态。
         LibboxSetMemoryLimit(true)
 
         var error: NSError?
@@ -208,8 +206,8 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         }
     }
 
-    /// libbox log-level code for command-server messages (matches sing-box `log.Level`:
-    /// panic=0, fatal=1, error=2 — see ExpoOneBoxModule.setCoreLogLevel).
+    /// command-server 消息使用的 libbox 日志等级码（对应 sing-box log.Level：
+    /// panic=0, fatal=1, error=2——见 ExpoOneBoxModule.setCoreLogLevel）。
     private static let libboxLogLevelError: Int32 = 2
 
     func writeMessage(_ message: String) {
@@ -229,12 +227,12 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         do {
             try commandServer!.startOrReloadService(configContent, options: options)
             logger.log("Service started/reloaded successfully")
-            // Clear any previous error so JS gets a clean state
+            // 清除任何先前的错误，让 JS 得到干净状态
             PacketTunnelProvider.clearStartupError()
         } catch {
             let msg = "(packet-tunnel) error: start service: \(error.localizedDescription)"
             logger.error("startOrReloadService failed: \(error.localizedDescription)")
-            // failStartup writes to the shared App Group file — main app reads it via getStartError()
+            // failStartup 写入共享 App Group 文件——主 App 通过 getStartError() 读取
             throw failStartup(msg)
         }
     }
@@ -268,7 +266,7 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     override func sleep() async {
-        // Record when we go to sleep so wake() can gate the reset on idle duration.
+        // 记录进入睡眠的时间，让 wake() 能按空闲时长决定是否重置。
         sleepStartedAt = Date()
         if let commandServer {
             commandServer.pause()
@@ -278,11 +276,10 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
     override func wake() {
         guard let commandServer else { return }
         commandServer.wake()
-        // A long idle usually leaves the proxy sockets dead (NAT/keepalive timeout while
-        // radios were off). Proactively close all connections so the next request dials
-        // fresh instead of stalling on a dead socket's TCP/QUIC timeout. This mirrors
-        // sing-box's own desktop suspend/resume behaviour (route/network.go:526-536),
-        // which the mobile Pause()/Wake() path omits.
+        // 长时间空闲通常会让 proxy socket 失效（无线电关闭期间 NAT/keepalive
+        // 超时）。主动关闭所有连接，让下一个请求重新拨号，而不是卡在失效 socket
+        // 的 TCP/QUIC 超时上。这与 sing-box 桌面端自身的挂起/恢复行为一致
+        //（route/network.go:526-536），而移动端 Pause()/Wake() 路径省略了它。
         let elapsed = sleepStartedAt.map { Date().timeIntervalSince($0) } ?? .infinity
         sleepStartedAt = nil
         if elapsed >= Self.wakeResetThreshold {
@@ -291,10 +288,10 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         }
     }
 
-    /// Debounced, thread-safe reset for same-interface path changes (WiFi roam / DHCP
-    /// renew) whose (name, index) is unchanged and therefore deduped away by sing-box's
-    /// interface monitor (experimental/libbox/monitor.go:95). Called from the NWPath
-    /// update handler, so it may run off the provider queue.
+    /// 针对同一接口 path 变化（WiFi 漫游 / DHCP 续租）的去抖、线程安全重置——
+    /// 这类变化的 (name, index) 不变，因而会被 sing-box 的接口监视器去重
+    ///（experimental/libbox/monitor.go:95）。由 NWPath 更新 handler 调用，因此
+    /// 可能运行在 provider 队列之外。
     func requestNetworkReset() {
         networkResetLock.lock()
         let now = Date()

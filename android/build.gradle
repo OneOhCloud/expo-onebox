@@ -10,15 +10,15 @@ applyKotlinExpoModulesCorePlugin()
 useCoreDependencies()
 useExpoPublishing()
 
-// If you want to use the managed Android SDK versions from expo-modules-core, set this to true.
-// The Android SDK versions will be bumped from time to time in SDK releases and may introduce breaking changes in your module code.
-// Most of the time, you may like to manage the Android SDK versions yourself.
+// 如果你想使用 expo-modules-core 管理的 Android SDK 版本，将此设为 true。
+// Android SDK 版本会在 SDK 发布中不时被提升，可能对你的模块代码引入破坏性变更。
+// 大多数情况下，你可能更愿意自行管理 Android SDK 版本。
 def useManagedAndroidSdkVersions = false
 if (useManagedAndroidSdkVersions) {
   useDefaultAndroidSdkVersions()
 } else {
   buildscript {
-    // Simple helper that allows the root project to override versions declared by this library.
+    // 简单的辅助方法，允许根项目覆盖本库声明的版本。
     ext.safeExtGet = { prop, fallback ->
       rootProject.ext.has(prop) ? rootProject.ext.get(prop) : fallback
     }
@@ -45,9 +45,8 @@ android {
     abortOnError false
   }
 
-  // Put the language-agnostic golden samples (shared with the JS and Swift
-  // runners) on the JVM unit-test classpath. See ParseUserinfoTest (audit C6 /
-  // Batch 3). Run: ./gradlew :expo-onebox:testDebugUnitTest
+  // 把与语言无关的 golden 样本（与 JS、Swift 运行器共享）放到 JVM
+  // 单元测试的 classpath 上。运行：./gradlew :expo-onebox:testDebugUnitTest
   sourceSets {
     test.resources.srcDirs += '../golden'
   }

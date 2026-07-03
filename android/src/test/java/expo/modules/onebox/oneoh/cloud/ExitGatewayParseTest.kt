@@ -7,9 +7,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 /**
- * Kotlin runner for the ExitGateway/auto group reducer golden lock (audit C2 /
- * D3c-05 / Batch 3). Loads the SAME golden/exitgateway.json the Swift runner
- * (ExitGatewayGoldenCheck) uses. Run: ./gradlew :expo-onebox:testDebugUnitTest
+ * ExitGateway/auto group reducer golden 锁的 Kotlin 运行器。加载与 Swift
+ * 运行器共享的同一份 golden 样本。运行：./gradlew :expo-onebox:testDebugUnitTest
  */
 class ExitGatewayParseTest {
     @Test

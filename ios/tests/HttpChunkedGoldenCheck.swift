@@ -1,8 +1,8 @@
 import Foundation
 
-// Host-runnable (`swiftc`) golden runner for the iOS hand-written chunked-transfer
-// decoder (audit D3c-08). Compiled with ../core/HttpChunked.swift, it asserts the
-// ACTUAL HttpChunked.decode against golden/http-chunked.json. No simulator needed:
+// 可在宿主机用 swiftc 运行的 golden runner，针对 iOS 手写的分块传输解码器。
+// 与 ../core/HttpChunked.swift 一起编译，用真实的 HttpChunked.decode 对
+// golden/http-chunked.json 做断言。无需模拟器：
 //
 //   swiftc -parse-as-library ios/core/HttpChunked.swift \
 //     ios/tests/HttpChunkedGoldenCheck.swift -o /tmp/hc \

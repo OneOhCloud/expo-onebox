@@ -2,22 +2,20 @@ import Foundation
 
 enum DnsParseError: Error { case noARecord }
 
-// Pure DNS A-record answer walker (audit C7 / D3c-04 / Batch 3). Extracted from
-// ConfigFetcher so the answer-parsing logic — QNAME skip, compression pointers,
-// non-A record (e.g. CNAME) skipping via rdlength, first-A extraction — can be
-// unit-tested against golden/dns-arecord.json without the Network stack. The
-// caller validates the header (transaction id, RCODE) and passes the answer
-// count. Mirrors the Kotlin parseFirstARecord in ConfigFetcher.kt.
+// 纯粹的 DNS A 记录答案遍历器：跳过 QNAME、处理压缩指针、按 rdlength 跳过
+// 非 A 记录（如 CNAME）、提取首个 A 记录。不依赖 Network 栈，因此可脱离设备
+// 做单元测试。调用方负责校验报文头（transaction id、RCODE）并传入答案数量。
+// 与 Kotlin ConfigFetcher.kt 的 parseFirstARecord 保持一致。
 func parseFirstARecord(from buf: [UInt8], length: Int, ancount: Int) throws -> String {
     var off = 12
-    // Skip question QNAME
+    // 跳过 question 的 QNAME
     while off < length {
         let b = Int(buf[off])
         if b == 0          { off += 1; break }
         if (b & 0xC0) == 0xC0 { off += 2; break }
         off += 1 + b
     }
-    off += 4   // QTYPE + QCLASS
+    off += 4   // QTYPE + QCLASS（跳过）
 
     for _ in 0 ..< ancount {
         guard off < length else { break }

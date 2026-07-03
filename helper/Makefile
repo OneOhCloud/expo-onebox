@@ -5,7 +5,7 @@ CRONET_ANDROID_MODULES = \
 	github.com/sagernet/cronet-go/lib/android_arm \
 	github.com/sagernet/cronet-go/lib/android_arm64
 
-# 获取 https://github.com/SagerNet/cronet-go 最新版本的tag
+# 获取 https://github.com/SagerNet/cronet-go 最新版本的 tag
 CRONET_GO_VERSION := $(shell curl -sL https://api.github.com/repos/SagerNet/cronet-go/releases/latest | sed -n 's/.*"tag_name":[[:space:]]*"\([^"\]*\)".*/\1/p')
 CRONET_GO_TAG := $(notdir $(CRONET_GO_VERSION))
 

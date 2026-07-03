@@ -1,9 +1,8 @@
 import Foundation
 
-// Host-runnable (`swiftc`) golden-sample runner for hostnameSuffixCandidates
-// (audit C2 / D3c-02). Compiled with ../core/DomainSuffix.swift, it asserts the
-// ACTUAL function against golden/domain-suffix.json — the same file the JS and
-// Kotlin runners use. No simulator:
+// 可在宿主机用 swiftc 运行的 golden 样本 runner，针对 hostnameSuffixCandidates。
+// 与 ../core/DomainSuffix.swift 一起编译，用真实的函数对 golden/domain-suffix.json
+// 做断言——与 JS、Kotlin runner 使用同一个文件。无需模拟器：
 //
 //   swiftc -parse-as-library ios/core/DomainSuffix.swift \
 //     ios/tests/DomainSuffixGoldenCheck.swift -o /tmp/ds \

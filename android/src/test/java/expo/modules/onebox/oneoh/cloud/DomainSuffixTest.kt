@@ -6,9 +6,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 /**
- * Kotlin runner for the hostname-suffix golden lock (audit C2 / D3c-02). Loads the
- * SAME golden/domain-suffix.json the JS (domain-suffix-golden.test.ts) and Swift
- * (DomainSuffixGoldenCheck) runners use. Run: ./gradlew :expo-onebox:testDebugUnitTest
+ * hostname 后缀 golden 锁的 Kotlin 运行器。加载与 JS、Swift 运行器共享的
+ * 同一份 golden 样本。运行：./gradlew :expo-onebox:testDebugUnitTest
  */
 class DomainSuffixTest {
     @Test

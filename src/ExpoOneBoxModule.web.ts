@@ -15,8 +15,8 @@ function buildMockNodes() {
   return MOCK_PROXY_NODE_TAGS.map(tag => ({ tag, delay: randomDelay(tag) }));
 }
 
-// Mock sing-box config body returned by fetchProfileConfig. Content is not
-// validated on web since start() is also mocked.
+// fetchProfileConfig 返回的 mock sing-box config 主体。web 上不校验内容，
+// 因为 start() 同样是 mock 的。
 export function buildMockConfigBody(url: string): string {
   return JSON.stringify(
     {
@@ -42,13 +42,12 @@ export function buildMockUserinfoHeader(): string {
   return `upload=${upload}; download=${download}; total=${total}; expire=${expire}`;
 }
 
-// Submodule-local mirror of parseProfileUserinfo (src/utils/profile-info.ts). The
-// web stub ships inside the native submodule and must stay self-contained, so it
-// cannot import the parent helper. All copies (this one, the JS reference, the
-// Kotlin parseUserinfo, the Swift parseUserinfo) are locked to one language-agnostic
-// contract: src/modules/expo-onebox/golden/userinfo.json — order-independent,
-// missing field = 0, null header = all zeros. Keep this body equivalent to that
-// contract; changes go through the golden JSON, never inline.
+// parseProfileUserinfo（src/utils/profile-info.ts）的 submodule 本地副本。web stub
+// 随原生 submodule 一起发布，必须保持自包含，因此无法 import 上层 helper。所有副本
+// （本副本、JS 参照实现、Kotlin parseUserinfo、Swift parseUserinfo）都锁定到同一份
+// 与语言无关的契约：src/modules/expo-onebox/golden/userinfo.json——与顺序无关、
+// 缺失字段 = 0、header 为 null 则全为零。保持此处实现与该契约等价；改动走 golden
+// JSON，绝不 inline 直改。
 function parseProfileUserinfo(header: string | null) {
   return {
     upload: parseInt(header?.match(/upload=(\d+)/)?.[1] ?? '0', 10),
@@ -60,11 +59,10 @@ function parseProfileUserinfo(header: string | null) {
 
 const MOCK_DNS_LIST = ['8.8.8.8', '1.1.1.1', '9.9.9.9', '223.5.5.5'];
 
-// Bare MAJOR.MINOR.PATCH mirror of the native LibboxVersion(). Single source of
-// truth is SING_BOX_TAG in modules/expo-onebox/helper/Makefile — this constant
-// must equal it (minus the leading `v`). Drift is caught by
-// src/utils/sing-box-version-sync.test.ts, so this is a scripted obligation,
-// not a silent hand-sync.
+// 原生 LibboxVersion() 的纯 MAJOR.MINOR.PATCH 镜像。单一来源是
+// modules/expo-onebox/helper/Makefile 中的 SING_BOX_TAG——本常量必须与之相等
+// （去掉开头的 `v`）。漂移由 src/utils/sing-box-version-sync.test.ts 捕获，
+// 因此这是脚本化的强制约束，而非静默的手工同步。
 const WEB_STUB_SING_BOX_VERSION = '1.13.14';
 
 class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
@@ -77,9 +75,9 @@ class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
   private _downlinkTotal: number = 0;
 
   getLibBoxVersion(): string {
-    // Native returns bare MAJOR.MINOR.PATCH (no v-prefix) via LibboxVersion()
-    // / Libbox.version(). Mirror the shape so getSingBox*Version helpers split
-    // cleanly across platforms. See WEB_STUB_SING_BOX_VERSION above.
+    // 原生通过 LibboxVersion() / Libbox.version() 返回纯 MAJOR.MINOR.PATCH
+    // （无 v 前缀）。镜像该形态，使 getSingBox*Version 系列 helper 能在各端
+    // 一致地切分。见上方 WEB_STUB_SING_BOX_VERSION。
     return WEB_STUB_SING_BOX_VERSION;
   }
 
@@ -87,10 +85,9 @@ class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
     this._lastStartConfig = config;
     console.log('[Web Mock] VPN start called with config:', config);
 
-    // Mirror the native "Tunnel" lifecycle line so the web log viewer isn't
-    // perpetually empty. onLog (libbox core output) and onError (startup
-    // failure) stay unmocked — no core runs on web and a synthetic failure is
-    // a product decision, not a mock concern.
+    // 镜像原生的 "Tunnel" 生命周期日志行，使 web 日志查看器不至于一直为空。
+    // onLog（libbox 内核输出）与 onError（启动失败）保持不 mock——web 上没有
+    // 内核运行，而制造一个合成的失败属于产品决策，不是 mock 该管的事。
     this.emit('onNativeLog', { level: 'info', tag: 'Tunnel', message: `start() requested, config bytes=${config.length}` });
 
     this._status = VPN_STATUS.STARTING;
@@ -183,9 +180,9 @@ class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
     console.log('[Web Mock] setCoreLogEnabled:', enabled);
   }
 
-  // No sing-box core runs on web; the log-level filter is a native concern.
-  // Present as a no-op so the shared mount effect in vpn-context.tsx does not
-  // throw on web (see the bridge-signature four-layer rule).
+  // web 上没有 sing-box 内核运行；日志级别过滤是原生侧的事。这里实现为
+  // no-op，使 vpn-context.tsx 中共享的 mount effect 在 web 上不会抛错
+  // （见 bridge-signature 四层规则）。
   setCoreLogLevel(level: string): void {
     console.log('[Web Mock] setCoreLogLevel:', level);
   }
@@ -237,9 +234,9 @@ class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
   }
 
   async copy2CacheDbPath(_sourceUri: string): Promise<boolean> {
-    // No native working directory on web, so nothing is copied. Mirror the
-    // native "already exists / skipped" branch (false) rather than reporting a
-    // copy that never happened — otherwise _layout.tsx mis-logs "copied".
+    // web 上没有原生工作目录，所以什么都不拷贝。镜像原生的
+    // "already exists / skipped" 分支（false），而不是谎报一次并未发生的拷贝
+    // ——否则 _layout.tsx 会误记 "copied"。
     return false;
   }
 
@@ -296,10 +293,10 @@ class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
 
 }
 
-// Conformance gate (D8-05): the web stub must expose every method the native
-// module declares. If a method is added to ExpoOneBoxModule.ts but not mirrored
-// here, this line fails tsc — instead of the app crashing at runtime on web
-// (as it did when setCoreLogLevel was missing). Type-only; erased at build.
+// 一致性闸门：web stub 必须暴露原生模块声明的每一个方法。若某方法
+// 加进了 ExpoOneBoxModule.ts 却没在这里镜像，本行会让 tsc 失败——而不是让
+// app 在 web 上运行时崩溃（就像当初 setCoreLogLevel 缺失时那样）。仅类型，
+// 编译时擦除。
 const _webStubConformsToNative = (m: InstanceType<typeof ExpoOneBoxModule>): ExpoOneBoxModuleType => m;
 void _webStubConformsToNative;
 

@@ -1,8 +1,7 @@
 // VPN 连接状态
-// Status-name vocabulary matches the numeric VPN_STATUS family (stopped=0,
-// starting=1, started=2, stopping=3), rather than a separate connect-family, so
-// the string and code describe the same lifecycle (audit C20). Diagnostic/log
-// use only — no logic branches on these strings.
+// 状态名词汇与数字型 VPN_STATUS 家族对齐（stopped=0、starting=1、
+// started=2、stopping=3），而非另立一套 connect 家族，因此字符串与状态码
+// 描述同一套生命周期。仅用于诊断/日志——不基于这些字符串做逻辑分支。
 export type VpnStatus = 'stopped' | 'starting' | 'started' | 'stopping' | 'unknown';
 
 // 状态码常量
@@ -24,9 +23,9 @@ export type StatusChangeEventPayload = {
 export type ErrorEventPayload = {
   type: string;
   message: string;
-  /** 错误来源: binary=libbox二进制, android=Android平台, module=Expo模块层 */
+  /** 错误来源: binary=libbox 二进制, android=Android 平台, module=Expo 模块层 */
   source: 'binary' | 'android' | 'module' | 'unknown';
-  status?: number; // 错误发生时的状态码（通常是STOPPED）
+  status?: number; // 错误发生时的状态码（通常是 STOPPED）
 };
 
 // 日志事件
@@ -71,16 +70,16 @@ export interface ConfigFetchResult {
 }
 
 export interface VerificationData {
-  /** Compile-time + KV-override known domain SHA256 list (approves broader subtrees via suffix). */
+  /** 编译期 + KV 覆盖的已知域名 SHA256 列表（通过后缀匹配放行更大范围的子树）。 */
   knownSha256List: string[];
-  /** Remote-fetched verified domain SHA256 list (TTL-cached in JS, pushed here for bg worker reuse). */
+  /** 远端拉取的已验证域名 SHA256 列表（在 JS 侧按 TTL 缓存，推送到这里供后台 worker 复用）。 */
   verifiedSha256List: string[];
 }
 
 export interface BackgroundRefreshOptions {
-  /** Accelerator base URL from the build-time constant; '' = not configured. */
+  /** 来自编译期常量的加速器 base URL；'' 表示未配置。 */
   accelerateUrl: string;
-  /** Dev-only probe: force the primary fetch to fail so the accelerate fallback path runs. */
+  /** 仅开发环境探针：强制 primary fetch 失败，以便走加速回落路径。 */
   testPrimaryUrlUnavailable: boolean;
 }
 

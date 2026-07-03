@@ -17,14 +17,14 @@ object DefaultNetworkMonitor {
     var defaultNetwork: Network? = null
     @Volatile private var listener: InterfaceUpdateListener? = null
 
-    /** Set by BoxService; invoked (debounced) when the current default network's link
-     *  properties change without an interface-identity change — a case sing-box's
-     *  interface monitor dedups, so stale connections must be closed explicitly. */
+    /** 由 BoxService 设置；当当前默认网络的 link properties 发生变化但接口标识
+     *  未变时（去抖后）调用——这是 sing-box 的 interface monitor 会去重的情况，
+     *  因此必须显式关闭陈旧连接。 */
     @Volatile var onNetworkReset: (() -> Unit)? = null
     @Volatile private var lastResetAt = 0L
     private const val RESET_DEBOUNCE_MS = 800L
 
-    /** Coalesces bursts of link-property callbacks into at most one reset per window. */
+    /** 把 link-property 回调的突发合并为每个时间窗最多一次 reset。 */
     fun notifyLinkChanged() {
         val now = SystemClock.elapsedRealtime()
         if (now - lastResetAt < RESET_DEBOUNCE_MS) return

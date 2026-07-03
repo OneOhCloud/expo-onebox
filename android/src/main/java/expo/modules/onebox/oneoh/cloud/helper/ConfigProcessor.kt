@@ -34,9 +34,9 @@ internal fun processConfig(config: String, context: Context): String {
                 Log.i(TAG, "config[experimental] cachePath: $cachePath")
             }
         }
-        // Do NOT log the processed config — it contains user profile data
-        // (server hostnames, passwords/UUIDs). See config-fetch-policy.md
-        // log-redaction contract.
+        // 切勿记录处理后的配置——它包含用户配置数据
+        // （服务器 hostname、密码/UUID）。见 config-fetch-policy.md 的
+        // 日志脱敏（log-redaction）约定。
         json.toString()
     } catch (e: Exception) {
         Log.w(TAG, "Failed to process config", e)

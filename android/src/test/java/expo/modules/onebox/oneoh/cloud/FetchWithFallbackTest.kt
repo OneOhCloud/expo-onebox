@@ -11,18 +11,15 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Characterization test locking the shared fetch → accelerator-fallback control
- * flow (audit D3c-01 / C4) that both fetchProfileConfigWithFallback and
- * executeRefreshWith now delegate to. A fake fetch + no-op log exercise the
- * decision without a network or android.util.Log. Mirrors the language-agnostic
- * golden/fetch-fallback-decision.json (asserted on the JS side by
- * fetch-fallback-decision-golden.test.ts). Run: ./gradlew :expo-onebox:testDebugUnitTest
+ * 特征测试（characterization test），锁定 fetchProfileConfigWithFallback 与
+ * executeRefreshWith 共同委托的「fetch → 加速回落」控制流。用假 fetch + 空 log
+ * 在没有网络、也不依赖 android.util.Log 的情况下驱动决策。
+ * 运行：./gradlew :expo-onebox:testDebugUnitTest
  */
 class FetchWithFallbackTest {
     private val noopLog: (String) -> Unit = {}
-    // Android-free stand-in for buildAcceleratedUrl (which uses android.net.Uri and
-    // throws in a JVM unit test); the real one is covered separately. Returns a
-    // non-primary URL so the injected fetch routes it down the accelerated branch.
+    // buildAcceleratedUrl 的无 Android 替身（真身用 android.net.Uri，在 JVM 单测中会
+    // 抛异常；真身另行覆盖）。返回一个非主 URL，使注入的 fetch 把它路由到加速分支。
     private val fakeAccel: (String, String) -> String = { _, base -> "$base/hashed/path" }
     private val primaryUrl = "https://p.example"
 
@@ -55,7 +52,7 @@ class FetchWithFallbackTest {
         o as FallbackOutcome.Ok
         assertEquals("primary", o.method)
         assertEquals(503, o.result.statusCode)
-        assertEquals(1, calls) // no accelerated fetch attempted
+        assertEquals(1, calls) // 未尝试加速 fetch
     }
 
     @Test
@@ -93,8 +90,8 @@ class FetchWithFallbackTest {
 
     @Test
     fun testModeForcesPrimaryFailureThenFallsBack() = runBlocking {
-        // testPrimaryUnavailable makes the primary throw before any fetch, so a
-        // verified domain with an accelerator falls back.
+        // testPrimaryUnavailable 使主请求在任何 fetch 之前就抛出，因此已验证域名
+        // 且有加速器时会回落。
         val o = fetchWithFallback(preflight(testPrimaryUnavailable = true), primaryUrl, "UA", { _, _ -> ok(200) }, noopLog, fakeAccel)
         assertTrue(o is FallbackOutcome.Ok)
         assertEquals("fallback", (o as FallbackOutcome.Ok).method)

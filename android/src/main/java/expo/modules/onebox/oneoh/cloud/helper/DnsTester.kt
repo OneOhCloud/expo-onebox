@@ -124,8 +124,7 @@ private const val PROBE_HOSTNAME = "www.baidu.com"
 
 private suspend fun performDnsQuery(dnsServer: String) {
     withContext(Dispatchers.IO) {
-        // Reuse ConfigFetcher.buildAQuery so the probe packet has a single source
-        // (was a second hardcoded byte-array implementation).
+        // 复用 ConfigFetcher.buildAQuery，使探测包只有单一来源。
         val queryData = buildAQuery(PROBE_HOSTNAME, PROBE_TX_ID)
 
         java.net.DatagramSocket().use { udpSocket ->

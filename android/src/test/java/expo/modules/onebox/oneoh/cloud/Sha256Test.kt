@@ -6,9 +6,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 /**
- * Kotlin runner for the SHA-256 hex golden-sample lock (audit C4 / Batch 3).
- * Loads the SAME golden/sha256.json that the JS (sha256.test.ts) and Swift
- * (Sha256GoldenCheck) runners use. Run: ./gradlew :expo-onebox:testDebugUnitTest
+ * SHA-256 hex golden 样本锁的 Kotlin 运行器。加载与 JS、Swift 运行器共享的
+ * 同一份 golden 样本。运行：./gradlew :expo-onebox:testDebugUnitTest
  */
 class Sha256Test {
     @Test

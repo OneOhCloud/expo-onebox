@@ -1,9 +1,9 @@
 import Foundation
 import Libbox
 
-/// Monitors traffic and status from the Libbox CommandServer using a CommandClient.
-/// Receives status updates (speed, memory, connections) and log entries,
-/// then forwards them to the ExpoOneBoxModule as JS events.
+/// 通过 CommandClient 监控来自 Libbox CommandServer 的流量与状态。
+/// 接收状态更新（速率、内存、连接数）与日志条目，然后作为 JS 事件转发给
+/// ExpoOneBoxModule。
 class TrafficMonitor: NSObject {
 
     private weak var module: ExpoOneBoxModule?
@@ -21,7 +21,7 @@ class TrafficMonitor: NSObject {
         options.addCommand(LibboxCommandStatus)
         options.addCommand(LibboxCommandLog)
         options.addCommand(LibboxCommandGroup)
-        options.statusInterval = Int64(NSEC_PER_SEC) // 1-second update interval
+        options.statusInterval = Int64(NSEC_PER_SEC) // 1 秒更新间隔
 
         let handler = ClientHandler(monitor: self)
 
@@ -30,23 +30,22 @@ class TrafficMonitor: NSObject {
             return
         }
 
-        // Store the client BEFORE launching the background thread and before calling
-        // the blocking connect().  This is critical: client.connect() runs the entire
-        // IPC event loop and only returns after the connection is closed.  If we set
-        // commandClient *after* connect() returns (old code), disconnect() would always
-        // find commandClient==nil and be a no-op, leaving the Go-side CommandServer
-        // goroutines alive until the Extension process exits.  Storing it here lets
-        // disconnect() correctly interrupt an in-progress connect() from any thread.
+        // 必须在启动后台线程、以及调用阻塞式 connect() 之前就存下 client。这很
+        // 关键：client.connect() 会运行整个 IPC 事件循环，只有连接关闭后才返回。
+        // 若在 connect() 返回之后才设置 commandClient，disconnect() 就会总是发现
+        // commandClient==nil 而变成空操作，导致 Go 侧 CommandServer 的 goroutine
+        // 一直存活到 Extension 进程退出。在这里存下它，能让 disconnect() 从任意
+        // 线程正确中断进行中的 connect()。
         commandClient = client
 
         DispatchQueue.global(qos: .utility).async { [weak self] in
             do {
-                // Blocks until the connection is closed (by disconnect() or server side).
+                // 阻塞直到连接关闭（由 disconnect() 或服务端关闭）。
                 try client.connect()
             } catch {
                 NSLog("[ExpoOneBox] CommandClient connect error: \(error.localizedDescription)")
             }
-            // Clear the stored reference once the connection is fully done.
+            // 连接完全结束后清除存下的引用。
             self?.commandClient = nil
         }
     }
@@ -64,10 +63,9 @@ class TrafficMonitor: NSObject {
     }
 
     fileprivate func onLogMessage(level: Int32, message: String) {
-        // Client-side filter: sing-box's `log.level` config does not
-        // apply to the platform writer (our IPC source), so we drop
-        // entries above the user-chosen max here before serialising
-        // into a JS event. See ExpoOneBoxModule.coreLogLevelMax.
+        // 客户端侧过滤：sing-box 的 log.level 配置不作用于 platform writer
+        //（我们的 IPC 来源），因此在序列化成 JS 事件之前，这里丢弃高于用户所选
+        // 上限的条目。见 ExpoOneBoxModule.coreLogLevelMax。
         guard let module else { return }
         if level > module.coreLogLevelMax { return }
         module.sendLog(message: message)
@@ -114,11 +112,11 @@ private class ClientHandler: NSObject, LibboxCommandClientHandlerProtocol {
     }
 
     func clearLogs() {
-        // No-op
+        // 空操作
     }
 
     func setDefaultLogLevel(_ level: Int32) {
-        // No-op
+        // 空操作
     }
 
     func writeGroups(_ message: (any LibboxOutboundGroupIteratorProtocol)?) {
@@ -128,14 +126,14 @@ private class ClientHandler: NSObject, LibboxCommandClientHandlerProtocol {
     }
 
     func initializeClashMode(_ modeList: (any LibboxStringIteratorProtocol)?, currentMode: String?) {
-        // No-op
+        // 空操作
     }
 
     func updateClashMode(_ newMode: String?) {
-        // No-op
+        // 空操作
     }
 
     func write(_ events: LibboxConnectionEvents?) {
-        // No-op - connection event monitoring not needed for basic traffic display
+        // 空操作——基础流量展示不需要连接事件监控
     }
 }

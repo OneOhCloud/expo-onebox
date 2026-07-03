@@ -26,9 +26,9 @@ object LocalResolver : LocalDNSTransport {
     private const val RCODE_NXDOMAIN = 3
 
     /**
-     * Shared DnsResolver.Callback.onError handling for [exchange] and [lookup]:
-     * an ErrnoException maps to errnoCode + resume; anything else propagates
-     * (guarding against a double-resume race).
+     * [exchange] 与 [lookup] 共享的 DnsResolver.Callback.onError 处理：
+     * ErrnoException 映射为 errnoCode + resume；其他一律向上传播
+     * （并防范 double-resume 竞态）。
      */
     @RequiresApi(Build.VERSION_CODES.Q)
     private fun handleDnsError(
@@ -45,7 +45,7 @@ object LocalResolver : LocalDNSTransport {
         try {
             continuation.resumeWithException(error)
         } catch (_: IllegalStateException) {
-            // already resumed
+            // 已经 resume 过
         }
     }
 

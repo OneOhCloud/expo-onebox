@@ -1,7 +1,7 @@
 import Foundation
 
-/// Bridges async/await code for use in synchronous Libbox callbacks.
-/// This is a copy for the Network Extension target.
+/// 为在同步的 Libbox 回调中使用 async/await 代码而做的桥接。
+/// Network Extension target 需要一份自己的副本。
 
 func runBlocking<T>(_ block: @escaping () async -> T) -> T {
     let semaphore = DispatchSemaphore(value: 0)

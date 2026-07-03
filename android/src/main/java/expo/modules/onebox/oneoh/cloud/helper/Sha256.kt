@@ -2,10 +2,9 @@ package expo.modules.onebox.oneoh.cloud.helper
 
 import java.security.MessageDigest
 
-// Shared pure core: lowercase hex of SHA-256(utf8(input)). Single source for the
-// domain routing key (accelerated URL path) and the short host digest used in
-// logs (ConfigFetcher.hostHash8). Locked by golden/sha256.json across JS, Kotlin
-// and Swift (audit C4 / Batch 3); asserted by the JVM unit test Sha256Test.
+// 共享纯核心：SHA-256(utf8(input)) 的小写 hex。它是域名路由 key（加速 URL 路径）
+// 与日志中短 host 摘要（ConfigFetcher.hostHash8）的单一来源，需与 JS、Kotlin、
+// Swift 三端实现保持一致。
 internal fun sha256Hex(input: String): String =
     MessageDigest.getInstance("SHA-256")
         .digest(input.toByteArray(Charsets.UTF_8))

@@ -26,7 +26,7 @@ import kotlin.random.Random
 
 private const val TAG = "ConfigFetcher"
 
-// MARK: - Result
+// MARK: - 结果
 
 data class ConfigFetchResult(
     val statusCode: Int,
@@ -34,7 +34,7 @@ data class ConfigFetchResult(
     val body: String,
 )
 
-/** Map an OkHttp response into the transport-neutral result (lower-cased headers, first value wins). */
+/** 把 OkHttp 响应映射为传输无关的结果（header 名转小写，取首个值）。 */
 private fun Response.toConfigFetchResult(): ConfigFetchResult {
     val flatHeaders = mutableMapOf<String, String>()
     for (name in headers.names()) {
@@ -47,20 +47,17 @@ private fun Response.toConfigFetchResult(): ConfigFetchResult {
     )
 }
 
-// MARK: - SNI-overriding SSLSocketFactory
-// When connecting to an IP address, TLS would fail because the server certificate
-// is issued for the hostname, not the IP. This factory injects the original hostname
-// as the SNI server name so the TLS handshake uses the correct name.
+// MARK: - 覆盖 SNI 的 SSLSocketFactory
+// 连接到 IP 地址时，TLS 会失败，因为服务器证书是签发给 hostname 而非 IP 的。
+// 本 factory 把原始 hostname 作为 SNI server name 注入，使 TLS 握手使用正确的名字。
 
 /**
- * Platform-default X509TrustManager (system trust store).
+ * 平台默认的 X509TrustManager（系统信任库）。
  *
- * OkHttp performs certificate-chain validation/cleaning through the
- * trust manager passed to sslSocketFactory(factory, trustManager) — the
- * factory's own SSLContext does NOT cover it on this custom-factory
- * path. A pass-through manager here disables chain validation entirely
- * and exposes config fetching to MITM. Never substitute a no-op
- * implementation.
+ * OkHttp 通过传给 sslSocketFactory(factory, trustManager) 的 trust manager
+ * 执行证书链的校验/清理——在这条自定义 factory 路径上，factory 自身的
+ * SSLContext 并不覆盖它。这里若换成一个直通（pass-through）manager 会彻底
+ * 关闭链校验，使配置抓取暴露于 MITM。切勿替换为空实现（no-op）。
  */
 private fun systemDefaultTrustManager(): X509TrustManager {
     val tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm())
@@ -68,7 +65,7 @@ private fun systemDefaultTrustManager(): X509TrustManager {
     return tmf.trustManagers.filterIsInstance<X509TrustManager>().first()
 }
 
-/** Short host digest for logs — the hostname is user profile data. */
+/** 用于日志的短 host 摘要——hostname 属于用户配置数据。 */
 private fun hostHash8(host: String): String = sha256Hex(host).take(8)
 
 private class SNISocketFactory(
@@ -107,18 +104,17 @@ private class SNISocketFactory(
 // MARK: - fetchConfig
 
 /**
- * Fetch a config URL using the best DNS server for hostname resolution.
- * Resolves the hostname via a raw UDP DNS A-record query, then makes an HTTPS
- * request to the resolved IP with a custom SNI override so TLS cert validation
- * passes against the original hostname.
- * Falls back to a direct fetch (system DNS) if resolution fails.
+ * 使用最佳 DNS server 解析 hostname 来抓取一个配置 URL。
+ * 通过原始 UDP DNS A 记录查询解析 hostname，然后带自定义 SNI 覆盖对解析出的
+ * IP 发起 HTTPS 请求，使 TLS 证书校验针对原始 hostname 通过。
+ * 若解析失败，回落到直连抓取（系统 DNS）。
  */
 internal suspend fun fetchConfig(url: String, userAgent: String): ConfigFetchResult {
     val parsedUri = android.net.Uri.parse(url)
     val originalHost = parsedUri.host ?: throw IllegalArgumentException("Malformed URL: $url")
     val scheme = parsedUri.scheme ?: "https"
 
-    // Skip DNS resolution for literal IP addresses
+    // 对字面 IP 地址跳过 DNS 解析
     if (isIPAddress(originalHost)) {
         return fetchDirect(url, userAgent)
     }
@@ -131,11 +127,11 @@ internal suspend fun fetchConfig(url: String, userAgent: String): ConfigFetchRes
         return fetchDirect(url, userAgent)
     }
 
-    // Log the hashed host only — the resolved IP is user profile data and must
-    // not be written in plaintext (it would defeat the hostHash8 masking).
+    // 只记录哈希后的 host——解析出的 IP 属于用户配置数据，绝不能明文写出
+    // （那会使 hostHash8 掩码形同虚设）。
     Log.i(TAG, "Resolved host(sha8=${hostHash8(originalHost)}) via $bestDns")
 
-    // Replace host with resolved IP, keep scheme/port/path/query
+    // 用解析出的 IP 替换 host，保留 scheme/port/path/query
     val port = parsedUri.port.let { if (it == -1) "" else ":$it" }
     val pathAndQuery = buildString {
         append(parsedUri.encodedPath ?: "/")
@@ -146,14 +142,13 @@ internal suspend fun fetchConfig(url: String, userAgent: String): ConfigFetchRes
     val sslContext = SSLContext.getDefault()
     val sniFactory = SNISocketFactory(sslContext.socketFactory, originalHost)
 
-    // HostnameVerifier: validate against original hostname (not IP)
+    // HostnameVerifier：针对原始 hostname（而非 IP）校验
     val hostnameVerifier = HostnameVerifier { _, session ->
         HttpsURLConnection.getDefaultHostnameVerifier().verify(originalHost, session)
     }
 
-    // Real system trust manager — OkHttp drives chain validation through it
-    // (see systemDefaultTrustManager doc). Only SNI and the hostname check
-    // are overridden on this path.
+    // 真正的系统 trust manager——OkHttp 通过它驱动链校验
+    // （见 systemDefaultTrustManager 文档）。这条路径上只覆盖 SNI 和 hostname 校验。
     val trustManager = systemDefaultTrustManager()
 
     val client = OkHttpClient.Builder()
@@ -161,7 +156,7 @@ internal suspend fun fetchConfig(url: String, userAgent: String): ConfigFetchRes
         .hostnameVerifier(hostnameVerifier)
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
-        // 30 s wall clock aligns with the iOS fetcher (config-fetch-policy).
+        // 30 s wall-clock 与 iOS fetcher 对齐（config-fetch-policy）。
         .callTimeout(30, TimeUnit.SECONDS)
         .build()
 
@@ -178,7 +173,7 @@ internal suspend fun fetchConfig(url: String, userAgent: String): ConfigFetchRes
     }
 }
 
-// MARK: - DNS A-record resolution
+// MARK: - DNS A 记录解析
 
 internal suspend fun resolveHostname(hostname: String, dnsServer: String): String {
     val txID = Random.nextInt(1, 0xFFFF).toShort()
@@ -190,7 +185,7 @@ internal suspend fun resolveHostname(hostname: String, dnsServer: String): Strin
             val serverAddr = InetSocketAddress(dnsServer, 53)
             socket.send(DatagramPacket(query, query.size, serverAddr))
 
-            // 4096 to admit EDNS0-sized responses, matching the iOS receive buffer.
+            // 用 4096 以容纳 EDNS0 大小的响应，与 iOS 的接收缓冲区一致。
             val buf = ByteArray(4096)
             val packet = DatagramPacket(buf, buf.size)
             socket.receive(packet)
@@ -227,7 +222,7 @@ internal fun parseFirstARecord(buf: ByteArray, length: Int, txID: Short): String
     val responseID = ((buf[0].toInt() and 0xFF) shl 8) or (buf[1].toInt() and 0xFF)
     if (responseID != (txID.toInt() and 0xFFFF)) throw IllegalStateException("Transaction ID mismatch")
 
-    // QR bit must be set (this is a response, not a query) — parity with iOS.
+    // QR 位必须被置位（这是响应而非查询）——与 iOS 保持一致。
     if ((buf[2].toInt() and 0x80) == 0) throw IllegalStateException("Not a DNS response (QR=0)")
 
     val rcode = buf[3].toInt() and 0x0F
@@ -237,16 +232,16 @@ internal fun parseFirstARecord(buf: ByteArray, length: Int, txID: Short): String
     if (ancount == 0) throw IllegalStateException("No answers in DNS response")
 
     var offset = 12
-    // Skip question QNAME
+    // 跳过 question 的 QNAME
     while (offset < length) {
         val b = buf[offset].toInt() and 0xFF
         if (b == 0) { offset++; break }
         if ((b and 0xC0) == 0xC0) { offset += 2; break }
         offset += 1 + b
     }
-    offset += 4 // skip QTYPE + QCLASS
+    offset += 4 // 跳过 QTYPE + QCLASS
 
-    // Walk answer records
+    // 遍历 answer 记录
     repeat(ancount) {
         if (offset >= length) return@repeat
         // NAME
@@ -273,10 +268,10 @@ internal fun parseFirstARecord(buf: ByteArray, length: Int, txID: Short): String
     throw IllegalStateException("No A record found")
 }
 
-// MARK: - Helpers
+// MARK: - 辅助函数
 
-// Pure format check — no DNS resolution. A literal IP is either dotted-quad
-// IPv4 or contains ':' (IPv6). Anything else is a hostname to resolve.
+// 纯格式检查——不做 DNS 解析。字面 IP 要么是点分四段 IPv4，要么含 ':'（IPv6）。
+// 其他一律视为需要解析的 hostname。
 private fun isIPAddress(host: String): Boolean {
     return host.matches(Regex("^(\\d{1,3}\\.){3}\\d{1,3}$")) || host.contains(":")
 }
@@ -285,7 +280,7 @@ private suspend fun fetchDirect(url: String, userAgent: String): ConfigFetchResu
     val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
-        // 30 s wall clock aligns with the iOS fetcher (config-fetch-policy).
+        // 30 s wall-clock 与 iOS fetcher 对齐（config-fetch-policy）。
         .callTimeout(30, TimeUnit.SECONDS)
         .build()
     val request = Request.Builder()

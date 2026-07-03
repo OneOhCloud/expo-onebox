@@ -1,9 +1,9 @@
 import Foundation
 
-// Host-runnable (`swiftc`) golden-sample runner for the shared SHA-256 hex core
-// (audit C4 / Batch 3). Compiled together with ../core/Sha256.swift, it asserts
-// the ACTUAL sha256HexString against golden/sha256.json — the same file the JS
-// (sha256.test.ts) and Kotlin (Sha256Test) runners use. No simulator required:
+// 可在宿主机用 swiftc 运行的 golden 样本 runner，针对共享的 SHA-256 十六进制
+// 核心。与 ../core/Sha256.swift 一起编译，用真实的 sha256HexString 对
+// golden/sha256.json 做断言——与 JS（sha256.test.ts）、Kotlin（Sha256Test）
+// runner 使用同一个文件。无需模拟器：
 //
 //   swiftc -parse-as-library ios/core/Sha256.swift \
 //     ios/tests/Sha256GoldenCheck.swift -o /tmp/sc \

@@ -42,8 +42,8 @@ object DefaultNetworkListener {
     private val networkActor = GlobalScope.actor<NetworkMessage>(Dispatchers.Unconfined) {
         val listeners = mutableMapOf<Any, (Network?) -> Unit>()
         var network: Network? = null
-        // Baseline link properties of the current default network, used to detect a
-        // same-interface IP/DNS/route change (the case sing-box's monitor dedups).
+        // 当前默认网络的基线 link properties，用于检测同一接口上的
+        // IP/DNS/route 变化（即 sing-box 的 monitor 会去重的那种情况）。
         var lastLp: LinkProperties? = null
         val pendingRequests = arrayListOf<NetworkMessage.Get>()
         for (message in channel) {
@@ -73,7 +73,7 @@ object DefaultNetworkListener {
                 }
                 is NetworkMessage.Put -> {
                     network = message.network
-                    lastLp = null // re-baseline link properties for the new default network
+                    lastLp = null // 为新的默认网络重新设定 link properties 基线
                     pendingRequests.forEach { it.response.complete(message.network) }
                     pendingRequests.clear()
                     listeners.values.forEach { it(network) }
@@ -94,8 +94,8 @@ object DefaultNetworkListener {
                     if (network == message.network) {
                         val prev = lastLp
                         lastLp = message.lp
-                        // Fire only on a real change from an established baseline — the first
-                        // link-properties report for a network is the baseline, not a change.
+                        // 仅在相对已建立基线发生真实变化时触发——某网络的首次
+                        // link-properties 报告是基线，不算变化。
                         val changed = prev != null && (
                             prev.linkAddresses != message.lp.linkAddresses ||
                                 prev.dnsServers != message.lp.dnsServers ||

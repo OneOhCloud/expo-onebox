@@ -46,9 +46,9 @@ import kotlinx.coroutines.GlobalScope
 import org.json.JSONObject
 import java.io.File
 
-// SharedPreferences keys mirrored into the background worker's store.
-// Canonical home is BackgroundConfigWorker.kt (alongside KEY_ACCELERATE_URL);
-// declared here for the write side until the worker file is migrated to share them.
+// 后台 worker 存储所镜像的 SharedPreferences key。
+// 权威定义在 BackgroundConfigWorker.kt（与 KEY_ACCELERATE_URL 相邻）；
+// 此处仅为写入侧的声明。
 private const val KEY_BG_CONFIG_URL = "config_url"
 private const val KEY_BG_USER_AGENT = "user_agent"
 
@@ -77,10 +77,8 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
             object : CommandClient.Handler {
                 override fun appendLogs(message: List<LogEntry>) {
                     if (!coreLogEnabled) return
-                    // Filter before IPC: sing-box's platform writer
-                    // bypasses log.level, so every entry arrives here
-                    // regardless of config. See vpn-context.tsx top-of-
-                    // file comment for the source reference.
+                    // 在 IPC 之前过滤：sing-box 的 platform writer 会绕过
+                    // log.level，因此无论配置如何，每条日志都会到达这里。
                     val max = coreLogLevelMax
                     for (entry in message) {
                         if (entry.level.toInt() > max) continue
@@ -127,17 +125,17 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
         @Volatile var isStartingUp: Boolean = false
         @Volatile var coreLogEnabled: Boolean = false
         /**
-         * Maximum sing-box level code to forward to JS. Codes mirror
-         * `log/level.go`: panic=0, fatal=1, error=2, warn=3, info=4,
-         * debug=5, trace=6. Entries with `level > coreLogLevelMax` are
-         * dropped at `appendLogs`. Default matches the app default.
+         * 转发给 JS 的 sing-box level 上限。level code 对应
+         * `log/level.go`：panic=0, fatal=1, error=2, warn=3, info=4,
+         * debug=5, trace=6。`level > coreLogLevelMax` 的条目会在
+         * `appendLogs` 处被丢弃。默认值与 app 默认值一致。
          */
         @Volatile var coreLogLevelMax: Int = 4 // info
         val connectivity by lazy { application.getSystemService<ConnectivityManager>()!! }
         val packageManager by lazy { application.packageManager }
         val powerManager by lazy { application.getSystemService<PowerManager>()!! }
         val notificationManager by lazy { application.getSystemService<NotificationManager>()!! }
-        // Alias for the single notificationManager instance (kept for ServiceNotification).
+        // 单个 notificationManager 实例的别名（供 ServiceNotification 使用）。
         val notification get() = notificationManager
         val wifiManager by lazy { application.getSystemService<WifiManager>()!! }
         val clipboard by lazy { application.getSystemService<ClipboardManager>()!! }
@@ -169,16 +167,15 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
     }
 
     /**
-     * Emit a native-layer log line to JS.
+     * 向 JS 发送一条原生层日志。
      *
-     * Distinct from `sendEvent("onLog", ...)` which carries the libbox /
-     * sing-box core output. This channel is for the Kotlin module's own
-     * activity — lifecycle hooks, permission flows, background worker
-     * transitions — so the user can distinguish "the JS–native bridge is
-     * alive" from "the core is running."
+     * 与承载 libbox / sing-box core 输出的 `sendEvent("onLog", ...)` 不同，
+     * 本通道用于 Kotlin 模块自身的活动——生命周期钩子、权限流程、
+     * 后台 worker 状态转换——以便用户区分"JS–原生桥是否存活"
+     * 与"core 是否在运行"。
      *
-     * Writes to logcat at the matching level as well, so platform
-     * tooling (`adb logcat`) still sees the event with source context.
+     * 同时以匹配的 level 写入 logcat，使平台工具（`adb logcat`）
+     * 仍能带上来源上下文看到该事件。
      */
     private fun sendNativeLog(level: String, tag: String, message: String) {
         val logTag = "ExpoOneBox/$tag"
@@ -214,7 +211,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
                 connection.connect()
                 sendNativeLog("info", "Module", "ExpoOneBox Kotlin module initialized")
             } catch (e: Exception) {
-                Log.e(TAG, "初始化失败", e)
+                Log.e(TAG, "init failed", e)
                 sendNativeLog("error", "Module", "init failed: ${e.message}")
             }
         }
@@ -224,12 +221,12 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
             try {
                 statusMonitor.disconnect()
             } catch (e: Exception) {
-                Log.w(TAG, "statusMonitor 销毁失败", e)
+                Log.w(TAG, "statusMonitor teardown failed", e)
             }
             try {
                 connection.disconnect()
             } catch (e: Exception) {
-                Log.w(TAG, "销毁时清理失败", e)
+                Log.w(TAG, "cleanup on destroy failed", e)
             }
         }
 
@@ -262,7 +259,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
                 currentStatus = actualStatus
                 actualStatus.ordinal
             } catch (e: Exception) {
-                Log.w(TAG, "查询服务状态失败: ${e.message}")
+                Log.w(TAG, "query service status failed: ${e.message}")
                 // 查询失败时返回当前缓存的状态
                 currentStatus.ordinal
             }
@@ -299,10 +296,9 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
             Log.d(TAG, "Core log output ${if (enabled) "enabled" else "disabled"}")
         }
 
-        // Client-side filter for the CommandServer log stream. Needed
-        // because sing-box's `log.level` config only filters stdout
-        // and the observable sink — the platform writer (which feeds
-        // our CommandClient) is unconditional.
+        // CommandServer 日志流的客户端侧过滤。之所以需要，是因为
+        // sing-box 的 `log.level` 配置只过滤 stdout 和 observable sink——
+        // 而 platform writer（为我们的 CommandClient 供数）是无条件的。
         Function("setCoreLogLevel") { level: String ->
             val code = when (level.lowercase()) {
                 "panic" -> 0
@@ -318,9 +314,9 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
             sendNativeLog("info", "Module", "core log level filter → $level (code $code)")
         }
 
-        // Returns the last startup error written to startup_error.txt by the VPN service.
-        // Empty string means no error (or last start succeeded).
-        // JS layer calls this when status transitions STARTING → STOPPED.
+        // 返回 VPN 服务写入 startup_error.txt 的最后一次启动错误。
+        // 空字符串表示无错误（或上次启动成功）。
+        // JS 层在状态从 STARTING → STOPPED 时调用。
         Function("getStartError") {
             return@Function try {
                 val file = File(getWorkingDir(context), "startup_error.txt")
@@ -426,10 +422,10 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
             val cachePath = "$workingDir/tun.db"
             Log.i(TAG, "cachePath: $cachePath")
             if (!File(cachePath).exists()){
-                Log.e(TAG, "规则集缓存文件不存在: $cachePath")
+                Log.e(TAG, "rule-set cache file missing: $cachePath")
 
             }else{
-                Log.i(TAG, "规则集缓存文件存在: $cachePath")
+                Log.i(TAG, "rule-set cache file exists: $cachePath")
             }
 
             isStartingUp = true
@@ -442,7 +438,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
             context.sendBroadcast(
                 Intent(Action.SERVICE_CLOSE).setPackage(context.packageName)
             )
-            Log.d(TAG, "服务停止命令已发送")
+            Log.d(TAG, "service stop command sent")
         }
 
         // ---- triggerURLTest: 触发 URLTest (单节点 tag 或 group tag 如 "ExitGateway") ----
@@ -477,10 +473,10 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
             findBestDnsServer()
         }
 
-        // ─── Config Fetching (DNS-resolved) ─────────────────────────────────────
+        // ─── 配置抓取（DNS 解析）─────────────────────────────────────
 
-        // Fetch a config URL using DNS resolution + optional accelerator fallback.
-        // Accelerator URL comes from the JS-pushed shared options (SharedPreferences).
+        // 用 DNS 解析 + 可选加速回落抓取一个配置 URL。
+        // 加速 URL 来自 JS 推送的共享选项（SharedPreferences）。
         AsyncFunction("fetchProfileConfig") Coroutine { url: String, userAgent: String ->
             val result = fetchProfileConfigWithFallback(
                 app,
@@ -494,13 +490,13 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
             )
         }
 
-        // ─── Native Background Config Refresh ────────────────────────────────────
+        // ─── 原生后台配置刷新 ────────────────────────────────────
 
-        // Push the JS-managed domain allowlist into the same SharedPreferences
-        // the WorkManager worker reads. Called after every successful
-        // `updateVerificationData()` in `domain-verification.ts` so the worker
-        // does not re-fetch the remote list on every wake. 24h TTL is enforced
-        // on the read side (BackgroundConfigWorker.verifyDomain).
+        // 把 JS 管理的域名 allowlist 推入 WorkManager worker 读取的
+        // 同一份 SharedPreferences。在 `domain-verification.ts` 中每次
+        // `updateVerificationData()` 成功后调用，使 worker 不必在每次
+        // 唤醒时都重新抓取远端列表。24h TTL 在读取侧强制执行
+        // （BackgroundConfigWorker.verifyDomain）。
         AsyncFunction("setVerificationData") { data: Map<String, Any?> ->
             @Suppress("UNCHECKED_CAST")
             val known    = (data["knownSha256List"]    as? List<String>) ?: emptyList()
@@ -509,16 +505,16 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
             BackgroundConfigWorker.saveDomainVerificationCache(app, known, verified)
         }
 
-        // Mirror JS-managed refresh options into the worker's SharedPreferences
-        // so the WorkManager task never opens the JS-owned SQLite database —
-        // a second SQLite library on the same WAL file crashes with SIGBUS.
+        // 把 JS 管理的刷新选项镜像进 worker 的 SharedPreferences，
+        // 使 WorkManager 任务永不打开 JS 持有的 SQLite 数据库——
+        // 同一个 WAL 文件上再挂一个 SQLite 库会以 SIGBUS 崩溃。
         AsyncFunction("setBackgroundConfigRefreshOptions") { options: Map<String, Any?> ->
             val accelerateUrl = options["accelerateUrl"] as? String ?: ""
             val testFlag      = options["testPrimaryUrlUnavailable"] as? Boolean ?: false
             BackgroundConfigWorker.saveRefreshOptions(app, accelerateUrl, testFlag)
         }
 
-        // Register (or update) the WorkManager periodic task.
+        // 注册（或更新）WorkManager 周期任务。
         AsyncFunction("registerBackgroundConfigRefresh") { url: String, userAgent: String, intervalSeconds: Int ->
             app.getSharedPreferences(BG_PREFS_NAME, android.content.Context.MODE_PRIVATE)
                 .edit()
@@ -529,22 +525,21 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
             Log.i(TAG, "Background config refresh registered (interval=${intervalSeconds}s)")
         }
 
-        // Execute config refresh immediately (foreground / dev screen).
+        // 立即执行配置刷新（前台 / dev 屏幕）。
         AsyncFunction("executeConfigRefreshNow") Coroutine { url: String, userAgent: String ->
             val result = executeRefreshWith(app, url, userAgent)
-            // Do NOT storeResult here: JS receives the result directly and calls
-            // applyResultToSBConfig() itself. Storing would overwrite any pending
-            // background doWork() result in SharedPrefs, causing it to be lost.
+            // 不要在此 storeResult：JS 直接收到结果并自行调用
+            // applyResultToSBConfig()。存储会覆盖 SharedPrefs 中任何待处理的
+            // 后台 doWork() 结果，导致其丢失。
             result.toMap()
         }
 
-        // Return and clear the last result stored by the background worker.
-        // Use app (not reactContext) to avoid NullPointerException during bridge teardown.
+        // 返回并清除后台 worker 存储的最后一次结果。
+        // 使用 app（而非 reactContext）以避免桥拆除期间的 NullPointerException。
         Function("getLastConfigRefreshResult") {
-            // Load and clear as one critical section so a concurrent worker write
-            // is not silently dropped between the two calls. BackgroundConfigWorker
-            // .storeResult locks on this same monitor, so the load/clear pair is
-            // atomic against a concurrent write.
+            // 把加载与清除作为单个临界区，使并发的 worker 写入不会在两次
+            // 调用之间被静默丢弃。BackgroundConfigWorker.storeResult 锁在
+            // 同一个 monitor 上，因此 load/clear 这对操作相对并发写入是原子的。
             synchronized(BackgroundConfigWorker::class.java) {
                 val result = BackgroundConfigWorker.loadLastResult(app) ?: return@Function null
                 BackgroundConfigWorker.clearLastResult(app)
@@ -552,7 +547,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
             }
         }
 
-        // Whether a WorkManager periodic task is currently enqueued/running.
+        // WorkManager 周期任务当前是否已入队/正在运行。
         AsyncFunction("isBackgroundConfigRefreshRegistered") {
             BackgroundConfigWorker.isRegistered(app)
         }
@@ -610,12 +605,12 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
             if (status == Status.Stopped && wasStarting) {
                 val errMsg = try {
                     val file = File(getWorkingDir(context), "startup_error.txt")
-                    // Strip the same source prefix onServiceAlert removes so a single
-                    // failure surfaces consistent text across both onError emissions.
+                    // 去掉与 onServiceAlert 相同的来源前缀，使同一次失败在两处
+                    // onError 发射中呈现一致的文本。
                     if (file.exists()) file.readText().trim().removePrefix("[binary] ") else ""
                 } catch (_: Exception) { "" }
 
-                // Language-neutral token; the JS layer localizes it (audit C9).
+                // 语言中立 token；由 JS 层本地化。
                 val message = errMsg.ifEmpty { "START_FAILED_GENERIC" }
                 Log.e(TAG, "Startup failure detected: $message")
                 sendEvent("onError", mapOf(
@@ -627,7 +622,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
             }
 
         } catch (e: Exception) {
-            Log.w(TAG, "发送状态变更事件失败: ${e.message}")
+            Log.w(TAG, "send status change event failed: ${e.message}")
         }
     }
 
@@ -661,7 +656,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
 
             // 检测是否为规则集下载失败
             if (type == Alert.CreateService && rawMessage.contains("initialize rule-set")) {
-                // Language-neutral tokens; the JS layer localizes them (audit C9).
+                // 语言中立 token；由 JS 层本地化。
                 if (rawMessage.contains("connection reset by peer")) {
                     cleanMessage = "RULESET_DOWNLOAD_RESET"
                 } else if (rawMessage.contains("Application error 0x0")) {
@@ -671,7 +666,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
                 }
             }
 
-            Log.e(TAG, "VPN 错误 [$source/${type.name}]: $cleanMessage")
+            Log.e(TAG, "VPN error [$source/${type.name}]: $cleanMessage")
 
             sendEvent("onError", mapOf(
                 "type" to type.name,
@@ -680,7 +675,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
                 "status" to currentStatus.ordinal
             ))
         } catch (e: Exception) {
-            Log.w(TAG, "发送错误事件失败: ${e.message}")
+            Log.w(TAG, "send error event failed: ${e.message}")
         }
     }
 
@@ -693,13 +688,13 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
         }
         ContextCompat.startForegroundService(context, intent)
         // 不在此处连接 StatusMonitor，等待服务状态变为 Started 时再连接
-        Log.d(TAG, "VPN 服务启动命令已发送")
+        Log.d(TAG, "VPN service start command sent")
     }
 
     /**
-     * Adapt a libbox outbound-group iterator into plain snapshots for the pure
-     * reducer `parseExitGatewayGroups` (helper/ExitGatewayParse.kt). Consumed by
-     * the live status monitor's group updates (audit C2 / Batch 3).
+     * 把 libbox outbound-group 迭代器适配为纯快照，供纯 reducer
+     * `parseExitGatewayGroups`（helper/ExitGatewayParse.kt）使用。
+     * 由实时状态监控的 group 更新消费。
      */
     private fun snapshotGroups(groups: Iterator<OutboundGroup>): List<ProxyGroupSnapshot> {
         val out = mutableListOf<ProxyGroupSnapshot>()

@@ -73,9 +73,9 @@ class BoxService(
         }
     }
 
-    // ==================== Startup error file ====================
+    // ==================== 启动错误文件 ====================
 
-    /** Shared startup_error.txt — written on failure, cleared on success. */
+    /** 共享的 startup_error.txt——失败时写入，成功时清空。 */
     private val startupErrorFile: java.io.File
         get() = java.io.File(getWorkingDir(service), "startup_error.txt")
 
@@ -90,18 +90,18 @@ class BoxService(
     // ==================== 服务控制 ====================
 
     private fun startCommandServer() {
-        Log.d(TAG, "[android] 开始启动 CommandServer...")
+        Log.d(TAG, "[android] starting CommandServer...")
         val commandServer = CommandServer(this, platformInterface)
         commandServer.start()
         this.commandServer = commandServer
-        Log.d(TAG, "[android] CommandServer 启动完成，等待客户端连接")
-        
+        Log.d(TAG, "[android] CommandServer started, waiting for client connection")
+
         // 尝试启用状态更新（如果有这样的方法）
         try {
             // 检查 commandServer 是否有启用状态更新的方法
-            Log.d(TAG, "[android] CommandServer 已启动，可接受客户端连接")
+            Log.d(TAG, "[android] CommandServer started, ready to accept client connections")
         } catch (e: Exception) {
-            Log.w(TAG, "[android] CommandServer 后续配置失败: ${e.message}")
+            Log.w(TAG, "[android] CommandServer post-start config failed: ${e.message}")
         }
     }
 
@@ -111,9 +111,9 @@ class BoxService(
      */
     suspend fun startService(configContent: String) {
         try {
-            // Clear any error from a previous start so the file reflects only
-            // this attempt; write it on every failure path below so the JS layer
-            // (which reads startup_error.txt on the stop transition) surfaces it.
+            // 清除上一次启动残留的错误，使该文件只反映本次尝试；
+            // 在下面每条失败路径上都写入，以便 JS 层（在停止转换时读取
+            // startup_error.txt）能把它呈现出来。
             clearStartupError()
             val serverName = extractServerName(configContent)
 
@@ -128,9 +128,9 @@ class BoxService(
             }
 
             DefaultNetworkMonitor.start()
-            // Same-interface IP/DNS changes (WiFi roam, DHCP renew) are deduped by
-            // sing-box's interface monitor and skip its auto-reset; close stale
-            // connections explicitly when the link properties change.
+            // 同一接口上的 IP/DNS 变化（WiFi 漫游、DHCP 续租）会被 sing-box 的
+            // interface monitor 去重并跳过其自动 reset；因此当 link 属性变化时
+            // 显式关闭陈旧连接。
             DefaultNetworkMonitor.onNetworkReset = {
                 if (::commandServer.isInitialized && status.value == Status.Started) {
                     Log.d(TAG, "link properties changed → resetNetwork")
@@ -165,10 +165,9 @@ class BoxService(
     }
 
     /**
-     * Foreground-notification title. The per-node name is not yet parsed from
-     * the config (the `config` param is the seam for that); until then use the
-     * localized app label so the notification reads sensibly — no hardcoded or
-     * banned-terminology string, and the native side has no JS i18n channel.
+     * 前台通知标题。逐节点名称尚未从配置中解析（`config` 参数是为此
+     * 预留的接缝）；在此之前使用本地化的 app 名称，使通知读起来合理——
+     * 不含硬编码或违禁术语字符串，且原生侧没有 JS 的 i18n 通道。
      */
     private fun extractServerName(config: String): String {
         return service.applicationInfo.loadLabel(service.packageManager).toString()
@@ -178,10 +177,8 @@ class BoxService(
 
     @OptIn(DelicateCoroutinesApi::class)
     override fun serviceStop() {
-        // CommandServer-initiated stop (invoked on a libbox thread). Route to the
-        // standard teardown on the main thread so the state machine actually
-        // reaches Stopped — this previously posted Status.Starting and returned,
-        // leaving the tunnel stuck "connecting" and un-stoppable.
+        // CommandServer 发起的停止（在 libbox 线程上调用）。转到主线程执行
+        // 标准拆除流程，使状态机真正到达 Stopped。
         GlobalScope.launch(Dispatchers.Main) { stopService() }
     }
 
@@ -209,8 +206,8 @@ class BoxService(
 
     private fun serviceUpdateIdleMode() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
-        // The receiver is registered before startCommandServer() finishes, so a Doze
-        // transition during startup could otherwise touch an uninitialized commandServer.
+        // receiver 在 startCommandServer() 完成之前就已注册，因此启动期间的
+        // Doze 转换否则可能触及尚未初始化的 commandServer。
         if (!::commandServer.isInitialized || status.value != Status.Started) return
         val context = service.applicationContext
         val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
@@ -218,9 +215,9 @@ class BoxService(
             commandServer.pause()
         } else {
             commandServer.wake()
-            // Leaving Doze implies a long idle; the proxy sockets are almost certainly dead.
-            // Close all connections so the next request dials fresh instead of stalling on a
-            // dead socket's timeout — sing-box's Wake() never closes them.
+            // 离开 Doze 意味着长时间空闲，代理 socket 几乎肯定已死。
+            // 关闭所有连接，使下一个请求重新拨号，而不是卡在死 socket 的
+            // 超时上——sing-box 的 Wake() 从不关闭它们。
             Log.d(TAG, "exited Doze → resetNetwork")
             commandServer.resetNetwork()
         }
@@ -230,9 +227,8 @@ class BoxService(
 
     @OptIn(DelicateCoroutinesApi::class)
     internal fun stopService() {
-        // Allow stopping while STARTING too (not just STARTED): a SERVICE_CLOSE
-        // during startup must be honoured, otherwise the tunnel gets stuck
-        // "connecting" and can only be killed by force-stopping the app (D4-03).
+        // 允许在 STARTING 时也能停止（不只是 STARTED）：启动期间的 SERVICE_CLOSE
+        // 必须被响应，否则隧道会卡在"connecting"，只能通过强制停止 app 才能杀掉。
         if (status.value == Status.Stopped || status.value == Status.Stopping) return
         status.value = Status.Stopping
         if (receiverRegistered) {
@@ -248,7 +244,7 @@ class BoxService(
             }
             DefaultNetworkMonitor.onNetworkReset = null
             DefaultNetworkMonitor.stop()
-            // commandServer may not be initialised yet if we stop mid-startup.
+            // 若在启动中途停止，commandServer 可能尚未初始化。
             if (::commandServer.isInitialized) {
                 closeService()
                 commandServer.close()

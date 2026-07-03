@@ -7,7 +7,7 @@ import os.log
 
 private let logger = Logger(subsystem: "cloud.oneoh.networktools.tunnel", category: "ExtPlatform")
 
-/// Strictly follows sing-box-for-apple's ExtensionPlatformInterface pattern.
+/// 严格遵循 sing-box-for-apple 的 ExtensionPlatformInterface 模式。
 class ExtensionPlatformInterface: NSObject, LibboxPlatformInterfaceProtocol, LibboxCommandServerHandlerProtocol {
 
     private let tunnel: PacketTunnelProvider
@@ -25,10 +25,9 @@ class ExtensionPlatformInterface: NSObject, LibboxPlatformInterfaceProtocol, Lib
         }
     }
 
-    // vendored-pattern: the IPv4 and IPv6 route-assembly blocks below are structurally
-    // mirrored on purpose — they track sing-box-for-apple's ExtensionPlatformInterface so
-    // Libbox upgrades stay a low-diff merge. Do not fold the two halves together; keeping
-    // them line-aligned with upstream matters more than the duplication.
+    // vendored-pattern：下面的 IPv4 与 IPv6 路由组装块是刻意保持结构镜像的——
+    // 它们对齐 sing-box-for-apple 的 ExtensionPlatformInterface，使 Libbox 升级
+    // 保持低 diff 合并。切勿把两半折叠合并；与上游逐行对齐比消除这处重复更重要。
     private func openTun0(_ options: LibboxTunOptionsProtocol?, _ ret0_: UnsafeMutablePointer<Int32>?) async throws {
         guard let options else {
             logger.error("Nil options")
@@ -248,9 +247,9 @@ class ExtensionPlatformInterface: NSObject, LibboxPlatformInterfaceProtocol, Lib
     }
 
     private var nwMonitor: NWPathMonitor?
-    /// Last default interface reported to sing-box, used to distinguish a genuine
-    /// interface switch (index change → core auto-resets) from a same-interface IP/DNS
-    /// change (deduped by the core → we must reset explicitly).
+    /// 上一次上报给 sing-box 的默认网络接口，用于区分真正的接口切换
+    ///（index 变化 → core 自动重置）与同一接口的 IP/DNS 变化
+    ///（被 core 去重 → 我们必须显式重置）。
     private var lastReportedInterface: (name: String, index: Int32)?
 
     func startDefaultInterfaceMonitor(_ listener: LibboxInterfaceUpdateListenerProtocol?) throws {
@@ -285,10 +284,9 @@ class ExtensionPlatformInterface: NSObject, LibboxPlatformInterfaceProtocol, Lib
         }
         let name = defaultInterface.name
         let index = Int32(defaultInterface.index)
-        // Same interface (name+index) but the path changed → sing-box dedups this and skips
-        // its automatic reset, yet the IP/route/DNS may have moved (WiFi roam, DHCP renew).
-        // Force a reset so stale connections don't linger. Genuine switches (index changes)
-        // are left to the core's own reset to avoid double-closing.
+        // 同一接口（name+index）但 path 变化 → sing-box 会去重并跳过其自动重置，
+        // 但 IP/路由/DNS 可能已改变（WiFi 漫游、DHCP 续租）。强制重置，避免陈旧
+        // 连接残留。真正的切换（index 变化）交给 core 自身重置，以免重复关闭。
         if let last = lastReportedInterface, last.name == name, last.index == index {
             tunnel.requestNetworkReset()
         }

@@ -1,13 +1,11 @@
 import Foundation
 
-// Shared pure core: progressive hostname suffixes, shortest first
-// ("a.b.c" → ["c", "b.c", "a.b.c"]). The single source for the domain-allowlist
-// suffix walk (BackgroundConfigRefresh.verifyDomain). Locked by
-// golden/domain-suffix.json across JS, Kotlin and Swift (audit C2 / D3c-02).
+// 共享纯核心：从最短开始的渐进 hostname 后缀
+//（"a.b.c" → ["c", "b.c", "a.b.c"]）。域名白名单后缀遍历
+//（BackgroundConfigRefresh.verifyDomain）的唯一来源，JS、Kotlin、Swift 三端共用。
 //
-// `omittingEmptySubsequences: false` preserves empty segments to match JS
-// String.split('.') and Kotlin split('.'); the default drop would diverge on
-// inputs like "a..b".
+// omittingEmptySubsequences: false 保留空段，以匹配 JS 的 String.split('.')
+// 与 Kotlin 的 split('.')；默认丢弃空段会在 "a..b" 这类输入上产生分歧。
 func hostnameSuffixCandidates(_ hostname: String) -> [String] {
     if hostname.isEmpty { return [] }
     let parts = hostname.split(separator: ".", omittingEmptySubsequences: false).map(String.init)

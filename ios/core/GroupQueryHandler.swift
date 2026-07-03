@@ -3,10 +3,9 @@ import ExpoModulesCore
 
 // MARK: - Shared group-parse helpers
 
-/// Adapts a libbox outbound-group iterator into plain snapshots for the pure
-/// reducer `parseExitGatewayGroups` (core/ExitGatewayParse.swift). The tag
-/// constants and the reducer live there so both stay libbox-free and testable
-/// (audit C2 / Batch 3).
+/// 把 libbox 的 outbound-group 迭代器适配成朴素快照，供纯 reducer
+/// parseExitGatewayGroups（core/ExitGatewayParse.swift）使用。tag 常量与 reducer
+/// 都放在那里，以保持二者不依赖 libbox 且可测试。
 func snapshotGroups(_ iterator: any LibboxOutboundGroupIteratorProtocol) -> [ProxyGroupSnapshot] {
     var out: [ProxyGroupSnapshot] = []
     while let group = iterator.next() {

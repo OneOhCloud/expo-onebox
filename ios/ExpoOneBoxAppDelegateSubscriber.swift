@@ -2,10 +2,10 @@ import ExpoModulesCore
 import BackgroundTasks
 import UIKit
 
-// Registers the BGAppRefreshTask handler at the correct lifecycle point.
-// BGTaskScheduler.shared.register(...) MUST be called before
-// applicationDidFinishLaunching returns — it cannot be called lazily from
-// the JS side or from OnCreate. ExpoAppDelegateSubscriber guarantees this.
+// 在正确的生命周期点注册 BGAppRefreshTask handler。
+// BGTaskScheduler.shared.register(...) 必须在 applicationDidFinishLaunching
+// 返回之前调用——不能从 JS 侧或 OnCreate 里延迟调用。
+// ExpoAppDelegateSubscriber 保证了这一点。
 public class ExpoOneBoxAppDelegateSubscriber: ExpoAppDelegateSubscriber {
 
     public func application(

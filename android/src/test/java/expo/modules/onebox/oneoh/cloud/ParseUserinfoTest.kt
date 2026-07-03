@@ -6,11 +6,9 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 /**
- * Kotlin third of the cross-platform userinfo golden-sample lock (audit C6 /
- * D3c-03 / Batch 3). Loads the SAME golden/userinfo.json that the JS
- * (src/utils/profile-info.test.ts) and Swift (ParseUserinfoTests) runners use —
- * wired onto the unit-test classpath via `test.resources.srcDirs += '../golden'`
- * in build.gradle. Run: ./gradlew :expo-onebox:testDebugUnitTest
+ * 跨平台 userinfo golden 样本锁的 Kotlin 一环。加载与 JS、Swift 运行器共享的
+ * 同一份 golden 样本——通过 build.gradle 中 `test.resources.srcDirs += '../golden'`
+ * 挂到单元测试 classpath 上。运行：./gradlew :expo-onebox:testDebugUnitTest
  */
 class ParseUserinfoTest {
     private fun goldenRoot() =
@@ -38,8 +36,8 @@ class ParseUserinfoTest {
     fun knownDivergencesOverflowToZeroOnNative() {
         for (div in goldenRoot().getAsJsonArray("knownDivergences")) {
             val obj = div.asJsonObject
-            // JS keeps a lossy large number for total=2^64-1; the Kotlin Int64
-            // parser overflows to 0. This locks the native half of the split.
+            // 对 total=2^64-1，JS 保留一个有损的大数；Kotlin 的 Int64 解析器溢出为 0。
+            // 本用例锁定这一分裂的原生一侧。
             assertEquals(obj.get("name").asString, 0L, parseUserinfo(obj.get("header").asString).total)
         }
     }

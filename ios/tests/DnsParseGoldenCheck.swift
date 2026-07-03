@@ -1,9 +1,9 @@
 import Foundation
 
-// Host-runnable (`swiftc`) golden-sample runner for the DNS A-record parser
-// (audit C7 / Batch 3). Compiled with ../core/DnsParse.swift, it asserts the
-// ACTUAL parseFirstARecord against golden/dns-arecord.json — the same file the
-// Kotlin runner (DnsParseTest) uses. No simulator required:
+// 可在宿主机用 swiftc 运行的 golden 样本 runner，针对 DNS A 记录解析器。
+// 与 ../core/DnsParse.swift 一起编译，用真实的 parseFirstARecord 对
+// golden/dns-arecord.json 做断言——与 Kotlin runner（DnsParseTest）使用同一个
+// 文件。无需模拟器：
 //
 //   swiftc -parse-as-library ios/core/DnsParse.swift \
 //     ios/tests/DnsParseGoldenCheck.swift -o /tmp/dc \
@@ -38,8 +38,8 @@ enum DnsParseGoldenCheck {
             guard let hex = c["responseHex"] as? String, let want = c["expect"] as? String else { fail("case missing responseHex/expect") }
             let name = c["name"] as? String ?? "?"
             let buf = hexToBytes(hex)
-            // Header validation (txID/RCODE) lives in the caller; here we pass the
-            // answer count read from bytes 6-7, matching the production call site.
+            // 报文头校验（txID/RCODE）在调用方；这里传入从字节 6-7 读出的答案
+            // 数量，与生产调用点一致。
             let ancount = Int((UInt16(buf[6]) << 8) | UInt16(buf[7]))
             guard let got = try? parseFirstARecord(from: buf, length: buf.count, ancount: ancount) else { fail("\(name): parser threw") }
             if got != want { fail("\(name): got \(got) want \(want)") }

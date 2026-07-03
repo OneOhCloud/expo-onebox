@@ -1,17 +1,17 @@
 import Foundation
 
-// Host-runnable (`swiftc`) golden-sample runner for the shared userinfo parser
-// (audit C6 / D3c-03 / Batch 3). Compiled together with ../core/UserinfoParser.swift,
-// it asserts the ACTUAL extracted parser against golden/userinfo.json — the same
-// file the JS (profile-info.test.ts) and Kotlin (ParseUserinfoTest) runners use.
-// No iOS simulator required; runs on the host Swift toolchain:
+// 可在宿主机用 swiftc 运行的 golden 样本 runner，针对共享的 userinfo 解析器。
+// 与 ../core/UserinfoParser.swift 一起编译，用真实抽出的解析器对
+// golden/userinfo.json 做断言——与 JS（profile-info.test.ts）、Kotlin
+//（ParseUserinfoTest）runner 使用同一个文件。无需 iOS 模拟器，在宿主 Swift
+// 工具链上运行：
 //
 //   swiftc -parse-as-library ios/core/UserinfoParser.swift \
 //     ios/tests/UserinfoGoldenCheck.swift -o /tmp/uc \
 //     && /tmp/uc src/modules/expo-onebox/golden/userinfo.json
 //
-// Lives under ios/tests/ so the podspec (source_files = *.swift, core/*.swift)
-// does not compile it into the shipped module.
+// 放在 ios/tests/ 下，这样 podspec（source_files = *.swift, core/*.swift）不会
+// 把它编进发布的模块里。
 
 @main
 enum UserinfoGoldenCheck {
@@ -35,7 +35,7 @@ enum UserinfoGoldenCheck {
         guard let cases = root["cases"] as? [[String: Any]] else { fail("missing cases[]") }
         for c in cases {
             let name = c["name"] as? String ?? "?"
-            let header = c["header"] as? String   // nil for JSON null
+            let header = c["header"] as? String   // JSON null 对应 nil
             guard let expect = c["expect"] as? [String: Any] else { fail("\(name): missing expect") }
             let got = parseUserinfo(header)
             let have = [got.upload, got.download, got.total, got.expire]
@@ -48,7 +48,7 @@ enum UserinfoGoldenCheck {
         for d in divs {
             let name = d["name"] as? String ?? "?"
             let header = d["header"] as? String
-            // JS keeps a lossy large number; the Swift Int64 parser overflows to 0.
+            // JS 保留一个有损的大数；Swift 的 Int64 解析器会溢出为 0。
             if parseUserinfo(header).total != 0 { fail("\(name): expected native total == 0") }
             checks += 1
         }

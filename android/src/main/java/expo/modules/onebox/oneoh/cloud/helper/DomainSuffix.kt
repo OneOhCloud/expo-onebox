@@ -1,10 +1,10 @@
 package expo.modules.onebox.oneoh.cloud.helper
 
-// Shared pure core: progressive hostname suffixes, shortest first
-// ("a.b.c" -> ["c", "b.c", "a.b.c"]). Single source for the domain-allowlist
-// suffix walk (verifyDomain). Locked by golden/domain-suffix.json across JS,
-// Kotlin and Swift (audit C2 / D3c-02). Kotlin split('.') keeps empty segments,
-// matching JS; the Swift core passes omittingEmptySubsequences:false to agree.
+// 共享纯核心：渐进的 hostname 后缀，最短优先
+//（"a.b.c" -> ["c", "b.c", "a.b.c"]）。是域名 allowlist 后缀遍历
+//（verifyDomain）的单一来源，需与 JS、Kotlin、Swift 三端保持一致。
+// Kotlin 的 split('.') 会保留空段以与 JS 一致；Swift 核心传
+// omittingEmptySubsequences:false 来与之吻合。
 internal fun hostnameSuffixCandidates(hostname: String): List<String> {
     if (hostname.isEmpty()) return emptyList()
     val parts = hostname.split('.')

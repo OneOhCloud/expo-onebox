@@ -37,20 +37,19 @@ private enum ConfigFetcherError: Error, LocalizedError {
 
 struct ConfigFetcher {
 
-    /// Short host digest for logs — the hostname is user profile data.
+    /// 日志用的短 host 摘要——hostname 属于用户配置文件数据。
     private static func hostHash8(_ host: String) -> String {
         String(sha256HexString(host).prefix(8))
     }
 
     // MARK: - Public API
 
-    /// Fetch a config URL using the best DNS server for resolution.
+    /// 使用最优 DNS 服务器解析并拉取配置 URL。
     ///
-    /// Resolves the hostname via a raw UDP A-record query, then connects using
-    /// Network.framework (NWConnection) which lets us explicitly set the TLS SNI
-    /// to the original hostname — even though we dial the resolved IP address.
-    /// This ensures the server presents the correct certificate, and the system
-    /// TLS stack performs full trust evaluation without any manual overrides.
+    /// 通过原始 UDP A 记录查询解析 hostname，然后用 Network.framework
+    ///（NWConnection）连接——即便我们拨号的是解析出的 IP 地址，也能显式把
+    /// TLS SNI 设为原始 hostname。这样服务器会出示正确证书，系统 TLS 栈完成
+    /// 完整的信任评估，无需任何手动覆盖。
     static func fetch(url: URL, userAgent: String) async throws -> ConfigFetchResult {
         var currentURL = url
         let maxRedirects = 5
@@ -70,8 +69,8 @@ struct ConfigFetcher {
             if requestPath.isEmpty { requestPath = "/" }
             if let q = components.percentEncodedQuery { requestPath += "?" + q }
 
-            // Resolve hostname to IP via the best DNS server.
-            // Skip resolution for bare IP addresses.
+            // 通过最优 DNS 服务器把 hostname 解析为 IP。
+            // 裸 IP 地址跳过解析。
             let connectTarget: String
             if isIPAddress(host) {
                 connectTarget = host
@@ -82,7 +81,7 @@ struct ConfigFetcher {
                     NSLog("[ConfigFetcher] Resolved host(sha8=%@) → %@ via %@", hostHash8(host), connectTarget, bestDns)
                 } catch {
                     NSLog("[ConfigFetcher] DNS failed (%@), falling back to hostname", error.localizedDescription)
-                    connectTarget = host   // let NWConnection use system DNS
+                    connectTarget = host   // 让 NWConnection 使用系统 DNS
                 }
             }
 
@@ -95,9 +94,8 @@ struct ConfigFetcher {
                 userAgent:     userAgent
             ))
 
-            // Follow standard 3xx redirects (301, 302, 303, 307, 308).
-            // Config URLs frequently redirect, and silently returning a
-            // redirect response would leave the caller with an empty body.
+            // 跟随标准 3xx 重定向（301、302、303、307、308）。
+            // 配置 URL 经常重定向，若默默返回重定向响应，会让调用方拿到空 body。
             if (301...308).contains(result.statusCode),
                let location = result.headers["location"],
                let redirectURL = URL(string: location, relativeTo: currentURL)?.absoluteURL {
@@ -114,23 +112,22 @@ struct ConfigFetcher {
 
     // MARK: - NWConnection HTTP(S) Request
 
-    /// Parameters for a single HTTP(S) request over NWConnection.
+    /// 单次 NWConnection HTTP(S) 请求的参数。
     private struct RequestSpec {
-        let host:          String   // original hostname (Host header + TLS SNI)
-        let connectTarget: String   // resolved IP or hostname to dial
+        let host:          String   // 原始 hostname（Host 头 + TLS SNI）
+        let connectTarget: String   // 拨号用的解析 IP 或 hostname
         let port:          UInt16
         let path:          String
         let useTLS:        Bool
         let userAgent:     String
     }
 
-    /// Builds NWParameters, injecting the TLS SNI when the request is HTTPS.
+    /// 构建 NWParameters，在 HTTPS 请求时注入 TLS SNI。
     ///
-    /// TLS options are created explicitly so SNI injection is guaranteed.
-    /// NWParameters.tls is a factory property (new instance each access), and
-    /// casting applicationProtocols.first to NWProtocolTLS.Options fails silently
-    /// on some iOS versions — leaving SNI unset and causing cert trust failure
-    /// when connectTarget is a bare IP address.
+    /// 显式创建 TLS options 以确保 SNI 一定被注入。NWParameters.tls 是工厂属性
+    ///（每次访问都是新实例），且在某些 iOS 版本上把 applicationProtocols.first
+    /// 强转为 NWProtocolTLS.Options 会静默失败——导致 SNI 未设置，当 connectTarget
+    /// 是裸 IP 地址时引发证书信任失败。
     private static func makeParameters(useTLS: Bool, sni host: String) -> NWParameters {
         guard useTLS else { return NWParameters.tcp }
         let tlsOptions = NWProtocolTLS.Options()
@@ -139,12 +136,10 @@ struct ConfigFetcher {
         return NWParameters(tls: tlsOptions)
     }
 
-    /// Makes an HTTP/1.1 request over NWConnection.
+    /// 通过 NWConnection 发起一次 HTTP/1.1 请求。
     ///
-    /// When the request is HTTPS the TLS SNI is explicitly set to `host`, so the
-    /// server selects the correct certificate even when `connectTarget` is a bare
-    /// IP address.  Full system trust evaluation applies — no manual SecTrust
-    /// overrides needed.
+    /// HTTPS 请求时，TLS SNI 被显式设为 host，因此即便 connectTarget 是裸 IP
+    /// 地址，服务器也会选对证书。系统会做完整的信任评估——无需手动覆盖 SecTrust。
     private static func performRequest(_ spec: RequestSpec) async throws -> ConfigFetchResult {
         let host          = spec.host
         let connectTarget = spec.connectTarget
@@ -159,16 +154,16 @@ struct ConfigFetcher {
             port: NWEndpoint.Port(rawValue: port)!,
             using: parameters
         )
-        // Serial queue: all NWConnection callbacks, HTTP parsing, and state
-        // mutations happen here — no additional locking required inside callbacks.
+        // 串行队列：所有 NWConnection 回调、HTTP 解析与状态修改都在这里发生——
+        // 回调内部无需额外加锁。
         let queue = DispatchQueue(label: "com.onebox.sub-fetch", qos: .userInitiated)
 
         return try await withTaskCancellationHandler {
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<ConfigFetchResult, Error>) in
 
-            // ── Finish helper ─────────────────────────────────────────────────
-            // Called from the serial `queue` (callbacks) or the global timeout.
-            // A simple atomic flag + NSLock guards the timeout cross-queue path.
+            // ── finish 辅助 ─────────────────────────────────────────────────
+            // 从串行 queue（回调）或全局超时调用。一个简单的原子标志 + NSLock
+            // 守护超时的跨队列路径。
             var finished = false
             let finishLock = NSLock()
 
@@ -183,15 +178,15 @@ struct ConfigFetcher {
                 }
             }
 
-            // ── HTTP response state (accessed only on `queue`) ────────────────
+            // ── HTTP 响应状态（只在 queue 上访问）────────────────
             var rawData     = Data()
-            var headersEnd: Int?              // byte offset past the \r\n\r\n separator
+            var headersEnd: Int?              // \r\n\r\n 分隔符之后的字节偏移
             var statusCode  = 0
             var respHeaders = [String: String]()
             var contentLength: Int? = nil
             var isChunked   = false
 
-            // ── Header parser ─────────────────────────────────────────────────
+            // ── 头部解析器 ─────────────────────────────────────────────────
             func parseHeadersIfNeeded() {
                 guard headersEnd == nil else { return }
                 let sep = Data([0x0D, 0x0A, 0x0D, 0x0A])
@@ -208,11 +203,11 @@ struct ConfigFetcher {
                     return
                 }
 
-                // Status line: "HTTP/1.x 200 Reason"
+                // 状态行："HTTP/1.x 200 Reason"
                 let parts = lines.removeFirst().split(separator: " ", maxSplits: 2)
                 if parts.count >= 2 { statusCode = Int(parts[1]) ?? 0 }
 
-                // Header fields
+                // 头部字段
                 for line in lines where !line.isEmpty {
                     guard let colon = line.firstIndex(of: ":") else { continue }
                     let k = line[..<colon].trimmingCharacters(in: .whitespaces).lowercased()
@@ -225,7 +220,7 @@ struct ConfigFetcher {
                 isChunked     = respHeaders["transfer-encoding"]?.lowercased().contains("chunked") ?? false
             }
 
-            // ── Body completion check (Content-Length path) ───────────────────
+            // ── body 完成检查（Content-Length 路径）───────────────────
             func tryCompleteWithContentLength() {
                 guard let start = headersEnd, let needed = contentLength else { return }
                 let body = rawData.dropFirst(start)
@@ -235,7 +230,7 @@ struct ConfigFetcher {
                     statusCode: statusCode, headers: respHeaders, body: text)))
             }
 
-            // ── Connection-close / chunked completion ─────────────────────────
+            // ── 连接关闭 / chunked 完成 ─────────────────────────
             func completeOnEOF() {
                 guard let start = headersEnd else {
                     finish(.failure(ConfigFetcherError.invalidResponse))
@@ -252,7 +247,7 @@ struct ConfigFetcher {
                     statusCode: statusCode, headers: respHeaders, body: text)))
             }
 
-            // ── Recursive receive ─────────────────────────────────────────────
+            // ── 递归接收 ─────────────────────────────────────────────
             func receiveMore() {
                 guard !finished else { return }
                 conn.receive(minimumIncompleteLength: 1, maximumLength: 131_072) { chunk, _, isComplete, error in
@@ -266,8 +261,8 @@ struct ConfigFetcher {
                         return
                     }
                     if let error {
-                        // posix ENOTCONN / cancelled = server closed connection
-                        // treat as EOF if we have headers already
+                        // posix ENOTCONN / cancelled = 服务器关闭了连接
+                        // 若已拿到头部，按 EOF 处理
                         if headersEnd != nil {
                             completeOnEOF()
                         } else {
@@ -279,7 +274,7 @@ struct ConfigFetcher {
                 }
             }
 
-            // ── Connection state machine ──────────────────────────────────────
+            // ── 连接状态机 ──────────────────────────────────────
             conn.stateUpdateHandler = { state in
                 switch state {
                 case .ready:
@@ -294,10 +289,10 @@ struct ConfigFetcher {
                         receiveMore()
                     })
                 case .failed(let err): finish(.failure(err))
-                // External cancel (Task cancellation via onCancel) lands here with
-                // finished == false → resume with CancellationError. The normal
-                // path's own conn.cancel() also lands here but finds finished ==
-                // true, so it is a guarded no-op (no double-resume).
+                // 外部取消（经 onCancel 的 Task 取消）到达这里时 finished == false
+                // → 以 CancellationError resume。正常路径自身的 conn.cancel() 也会
+                // 到达这里，但发现 finished == true，因此是受保护的空操作
+                //（不会重复 resume）。
                 case .cancelled:       finish(.failure(CancellationError()))
                 default:               break
                 }
@@ -305,34 +300,33 @@ struct ConfigFetcher {
 
             conn.start(queue: queue)
 
-            // 30-second wall-clock timeout (fires on global queue).
-            // finish() is NSLock-guarded so this cross-queue call is safe.
-            // conn.cancel() inside finish() triggers a .cancelled state callback
-            // on `queue`, but by then finished == true so it is a no-op.
-            // Queued receiveMore() closures on `queue` also see finished == true
-            // and return immediately — no double-resume risk.
+            // 30 秒 wall-clock 超时（在全局队列上触发）。
+            // finish() 受 NSLock 保护，因此这次跨队列调用是安全的。
+            // finish() 内部的 conn.cancel() 会在 queue 上触发一次 .cancelled 状态
+            // 回调，但此时 finished == true，故为空操作。
+            // queue 上排队的 receiveMore() 闭包也会看到 finished == true 并立即
+            // 返回——无重复 resume 风险。
             DispatchQueue.global().asyncAfter(deadline: .now() + 30) {
                 finish(.failure(ConfigFetcherError.timeout))
             }
         }
         } onCancel: {
-            // BGTask expiry (or any Task cancellation) aborts the in-flight
-            // NWConnection immediately, instead of waiting out the 30 s timeout.
+            // BGTask 过期（或任何 Task 取消）会立即中止进行中的 NWConnection，
+            // 而不是干等到 30 秒超时。
             conn.cancel()
         }
     }
 
     // MARK: - Chunked Transfer Encoding Decoder
 
-    // Chunked-transfer decoding lives in the framework-free HttpChunked so it can
-    // be golden-tested off-device (audit D3c-08).
+    // 分块传输解码放在不依赖框架的 HttpChunked 中，以便脱离设备做测试。
     private static func decodeChunked(_ data: Data) -> Data {
         HttpChunked.decode(data)
     }
 
     // MARK: - DNS A-Record Resolution
 
-    /// Resolve a hostname to an IPv4 address using the given DNS server IP.
+    /// 使用给定的 DNS 服务器 IP 把 hostname 解析为 IPv4 地址。
     static func resolveHostname(_ hostname: String, via dnsServer: String) async throws -> String {
         let txID  = UInt16.random(in: 1...0xFFFF)
         let query = buildAQuery(for: hostname, transactionID: txID)
@@ -432,11 +426,11 @@ struct ConfigFetcher {
 
 // MARK: - Single-shot continuation guard
 
-/// Resumes a `CheckedContinuation` at most once. Guards the cross-thread paths
-/// (blocking socket callbacks, timeouts) where a continuation could otherwise be
-/// resumed twice — resuming a checked continuation more than once is a crash.
-// Safe to share across threads: `resumed` and the resume call are guarded by
-// `lock`, which is exactly the cross-thread double-resume this type prevents.
+/// 最多 resume 一次 CheckedContinuation。守护那些本可能导致 continuation
+/// 被 resume 两次的跨线程路径（阻塞的 socket 回调、超时）——对 checked
+/// continuation 多次 resume 会崩溃。
+// 可安全跨线程共享：resumed 与 resume 调用都由 lock 守护，这正是本类型
+// 要防止的跨线程重复 resume。
 final class ResumeOnce<T>: @unchecked Sendable {
     private let continuation: CheckedContinuation<T, Error>
     private let lock = NSLock()

@@ -1,20 +1,19 @@
 package expo.modules.onebox.oneoh.cloud.helper
 
-// Single source for the proxy-group tag names (audit C2 / Batch 3).
+// proxy-group tag 名称的单一来源。
 const val GROUP_EXIT_GATEWAY = "ExitGateway"
 const val GROUP_AUTO = "auto"
 
-// Plain, libbox-free snapshot of one outbound group. The libbox OutboundGroup
-// iterator is adapted into these at each call site so the reducer below is pure
-// and unit-testable.
+// 单个 outbound group 的纯（不依赖 libbox）快照。libbox 的 OutboundGroup
+// 迭代器会在每个调用点被适配成这些快照，使下面的 reducer 是纯的、可单测。
 data class ProxyGroupSnapshot(
     val tag: String,
     val selected: String,
     val items: List<Pair<String, Int>>,
 )
 
-// Reduce the group snapshots into the (all, now, autoNow) shape the JS layer
-// consumes. Locked by golden/exitgateway.json against the Swift twin.
+// 把 group 快照归约成 JS 层消费的 (all, now, autoNow) 形态，
+// 需与 Swift 对应实现保持一致。
 internal fun parseExitGatewayGroups(
     groups: List<ProxyGroupSnapshot>,
 ): Triple<List<Map<String, Any>>, String, String> {

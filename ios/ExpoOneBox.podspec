@@ -17,13 +17,13 @@ Pod::Spec.new do |s|
 
   s.dependency 'ExpoModulesCore'
 
-  # Main module files + core/ helpers (moved out of root to keep ExpoOneBox* files at root)
+  # 主模块文件 + core/ 辅助文件（core/ 单独放，让 ExpoOneBox* 文件留在根目录）
   s.source_files = ["*.{h,m,mm,swift,hpp,cpp}", "core/*.{h,m,mm,swift,hpp,cpp}"]
 
-  # Include the Libbox.xcframework (sing-box Go library)
+  # 引入 Libbox.xcframework（sing-box Go 库）
   s.vendored_frameworks = "Libbox.xcframework"
 
-  # System frameworks required by the module
+  # 模块所需的系统 framework
   s.frameworks = 'Network', 'UserNotifications', 'BackgroundTasks'
 
   s.pod_target_xcconfig = {

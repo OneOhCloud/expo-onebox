@@ -2,11 +2,9 @@ import ExpoModulesCore
 @preconcurrency import Libbox
 @preconcurrency import NetworkExtension
 
-/// Serializes access to a field shared across the Expo async executor, the main
-/// queue (NEVPNStatus observer) and background dispatch queues. Every get/set
-/// takes the lock and never nests another guarded access, so there is no deadlock
-/// (audit D4-10). Runtime behaviour needs a real iOS device to fully verify —
-/// Network Extension VPN does not run in the simulator.
+/// 串行化对某个字段的访问——该字段被 Expo 异步执行器、主队列（NEVPNStatus
+/// 观察者）与后台 dispatch 队列共享。每次 get/set 都获取该锁，且从不在锁内
+/// 嵌套另一次受保护访问，因此不会死锁。
 @propertyWrapper
 final class Guarded<T>: @unchecked Sendable {
     private var value: T
@@ -18,33 +16,32 @@ final class Guarded<T>: @unchecked Sendable {
     }
 }
 
-// The mutable fields previously flagged as data races (D4-10) are now @Guarded;
-// @unchecked Sendable remains because the class still crosses concurrency domains.
+// 这些可变字段用 @Guarded 保护；@unchecked Sendable 仍保留，因为该类仍会跨越
+// 并发域（concurrency domain）。
 public class ExpoOneBoxModule: Module, @unchecked Sendable {
 
-    // Extension bundle identifier — must match the NE target's PRODUCT_BUNDLE_IDENTIFIER
+    // Extension bundle 标识符——必须与 NE target 的 PRODUCT_BUNDLE_IDENTIFIER 一致
     private static let extensionBundleID = "cloud.oneoh.networktools.tunnel"
-    // App Group identifier — shared between app and extension
+    // App Group 标识符——在主 App 与 extension 间共享
     private static let appGroupID = "group.cloud.oneoh.networktools"
 
     @Guarded private var vpnManager: NETunnelProviderManager?
     @Guarded private var trafficMonitor: TrafficMonitor?
     @Guarded private var currentStatus: Int = 0 // 0=Stopped, 1=Starting, 2=Started, 3=Stopping
-    /// Tracks whether VPN is in the process of starting up.
-    /// Set to true when user initiates start, cleared on connected or disconnected.
-    /// Used to detect startup failures even when NEVPNStatus goes connecting→disconnecting→disconnected.
+    /// 跟踪 VPN 是否正处于启动过程中。
+    /// 用户发起启动时置为 true，连接成功或断开时清除。
+    /// 用于识别启动失败——即便 NEVPNStatus 走的是 connecting→disconnecting→disconnected。
     @Guarded private var isStartingUp: Bool = false
-    /// Set when the user asks to stop, so an unexpected tunnel drop (crash) can be
-    /// told apart from a clean stop in the .disconnected handler (audit D4-06).
+    /// 用户请求停止时置位，以便在 .disconnected 处理里把意外的隧道掉线（crash）
+    /// 与正常停止区分开。
     @Guarded private var userInitiatedStop: Bool = false
     private var lastStartConfig: String = ""
     private var isInitialized = false
     private var statusObserver: NSObjectProtocol?
     internal var coreLogEnabled = false
-    /// Maximum sing-box level code to forward to JS. Codes mirror
-    /// `log/level.go` in the vendored sing-box tree: panic=0, fatal=1,
-    /// error=2, warn=3, info=4, debug=5, trace=6. Entries with
-    /// `level > coreLogLevelMax` are dropped before `sendLog(...)`.
+    /// 转发给 JS 的 sing-box 日志等级上限。等级码对应内置 sing-box 源码树中的
+    /// log/level.go：panic=0, fatal=1, error=2, warn=3, info=4, debug=5, trace=6。
+    /// level > coreLogLevelMax 的条目会在 sendLog(...) 之前被丢弃。
     @Guarded internal var coreLogLevelMax: Int32 = 4 // info
 
     public func definition() -> ModuleDefinition {
@@ -56,8 +53,8 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
             self.initializeLibbox()
             self.observeVPNStatus()
             self.sendNativeLog(level: "info", tag: "Module", message: "ExpoOneBox Swift module initialized")
-            // Sync initial VPN state so JS gets correct status on app launch
-            // (NEVPNStatusDidChange doesn't fire on launch if VPN was already running)
+            // 同步初始 VPN 状态，让 JS 在 App 启动时拿到正确状态
+            //（若 VPN 已在运行，NEVPNStatusDidChange 在启动时不会触发）
             Task {
                 await self.syncInitialVPNStatus()
             }
@@ -73,9 +70,8 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
         }
 
         Function("getStatus") { () -> Int in
-            // Query the live tunnel status (matching Android's getStatus) rather
-            // than the async-populated cache, so JS reads the correct value on
-            // cold start when the VPN was already connected.
+            // 查询实时隧道状态（与 Android 的 getStatus 一致），而不是异步填充的
+            // 缓存，这样 VPN 已连接时冷启动的 JS 也能读到正确值。
             guard let manager = self.vpnManager else { return self.currentStatus }
             let live: Int
             switch manager.connection.status {
@@ -94,9 +90,8 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
             NSLog("[ExpoOneBox] Core log output \(enabled ? "enabled" : "disabled")")
         }
 
-        // Client-side filter for the CommandServer log stream. sing-box's
-        // `log.level` config only filters stdout / observable sinks —
-        // the platform writer feeding us is unconditional.
+        // CommandServer 日志流的客户端侧过滤。sing-box 的 log.level 配置只过滤
+        // stdout / 可观察 sink——喂给我们的 platform writer 是无条件输出的。
         Function("setCoreLogLevel") { (level: String) in
             let code: Int32
             switch level.lowercased() {
@@ -132,10 +127,9 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
             do {
                 let manager = try await self.loadOrCreateManager()
                 self.vpnManager = manager
-                // Semantic divergence from Android: this returns whether the VPN
-                // profile was installed and enabled, NOT the user's Allow/Deny
-                // choice on the system dialog. Android returns the real dialog
-                // result. Callers must not treat `true` as "user consented".
+                // 与 Android 的语义差异：这里返回的是 VPN 配置文件是否已安装并
+                // 启用，而不是用户在系统弹窗上的 Allow/Deny 选择。Android 返回的是
+                // 真实的弹窗结果。调用方不得把 true 当作"用户已同意"。
                 return manager.isEnabled
             } catch {
                 NSLog("[ExpoOneBox] requestVpnPermission error: \(error.localizedDescription)")
@@ -153,12 +147,12 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
             await self.stopVPN()
         }
 
-        // Android-only bridge methods, stubbed on iOS for 4-layer signature
-        // parity (docs/claude/bridge-signature.md). Every JS call site guards
-        // with `Platform.OS === 'android'`, so these are never reached on iOS;
-        // the stubs exist only so the signature matches across all four layers.
+        // 仅 Android 使用的 bridge 方法，在 iOS 上以 stub 形式存在，用于保持四层
+        // 签名一致（docs/claude/bridge-signature.md）。每个 JS 调用点都用
+        // Platform.OS === 'android' 守卫，因此在 iOS 上永不会到达；这些 stub 只是
+        // 为了让签名在全部四层之间匹配。
         Function("checkBatteryOptimizationExemption") { () -> Bool in
-            // iOS has no battery-optimization allowlist; report "exempt".
+            // iOS 没有电池优化白名单；直接报告"豁免"。
             return true
         }
 
@@ -167,18 +161,18 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
         }
 
         Function("crashForBugsnagTest") { () -> Bool in
-            // No-op on iOS (Android-only diagnostic); never called here.
+            // iOS 上为空操作（仅 Android 的诊断项）；此处永不调用。
             return false
         }
 
         Function("repairSQLiteDirectory") { () -> Bool in
-            // SQLite directory repair is an Android storage-path concern; no-op on iOS.
+            // SQLite 目录修复是 Android 的存储路径问题；iOS 上为空操作。
             return true
         }
 
-        // Returns the last startup error written by the Network Extension to the shared
-        // App Group file. Empty string means no error (or last start succeeded).
-        // JS layer calls this when status transitions STARTING → STOPPED.
+        // 返回 Network Extension 写入共享 App Group 文件的最近一次启动错误。
+        // 空字符串表示无错误（或上次启动成功）。
+        // JS 层在状态从 STARTING → STOPPED 转换时调用此方法。
         Function("getStartError") { () -> String in
             return self.readStartupError()
         }
@@ -188,7 +182,7 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
             return self.readLastStartConfig()
         }
 
-        // Trigger URLTest for a specific outbound tag or group tag (e.g. "ExitGateway").
+        // 对指定的 outbound tag 或 group tag（例如 "ExitGateway"）触发 URLTest。
         AsyncFunction("triggerURLTest") { (tag: String) async -> Bool in
             return await Task.detached(priority: .userInitiated) {
                 guard let client = LibboxNewStandaloneCommandClient() else { return false }
@@ -202,8 +196,8 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
             }.value
         }
 
-        // Select a proxy outbound in the ExitGateway selector group
-        // via LibboxNewStandaloneCommandClient (same IPC used by stopVPN).
+        // 通过 LibboxNewStandaloneCommandClient 在 ExitGateway selector group 中
+        // 选择一个 proxy outbound（与 stopVPN 使用同一 IPC）。
         AsyncFunction("selectProxyNode") { (tag: String) async throws -> Bool in
             return try await Task.detached(priority: .userInitiated) {
                 guard let client = LibboxNewStandaloneCommandClient() else {
@@ -215,15 +209,15 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
             }.value
         }
 
-        // Get the best DNS server by testing latency to multiple DNS servers
+        // 通过测试到多个 DNS 服务器的延迟，选出最优 DNS 服务器
         AsyncFunction("getBestDns") { () async -> String in
             return await DnsTester.findBest()
         }
 
-        // ─── Config Fetching (DNS-resolved) ─────────────────────────────────────
+        // ─── 配置拉取（DNS 解析）─────────────────────────────────────────────────
 
-        // Fetch a config URL with DNS-resolved primary + optional accelerator fallback.
-        // Accelerator URL comes from the JS-pushed shared options (AppGroup UserDefaults).
+        // 拉取配置 URL：DNS 解析后的主地址 + 可选的 accelerator 回落。
+        // accelerator URL 来自 JS 推送的共享选项（AppGroup UserDefaults）。
         AsyncFunction("fetchProfileConfig") { (url: String, userAgent: String) async throws -> [String: Any] in
             let result = try await BackgroundConfigRefresh.fetchProfileConfigWithFallback(
                 url: url,
@@ -236,22 +230,21 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
             ]
         }
 
-        // ─── Native Background Config Refresh ────────────────────────────────────
+        // ─── 原生后台配置刷新 ────────────────────────────────────────────────────
 
-        // Push the JS-managed domain allowlist into AppGroup UserDefaults so the
-        // BGTaskScheduler worker can verify hostnames without re-fetching the
-        // remote list. Called from `domain-verification.ts` after every
-        // successful cache update; the worker's 24h TTL gate falls back to the
-        // compile-time list when the shared cache is missing or expired.
+        // 把 JS 管理的域名白名单推入 AppGroup UserDefaults，让 BGTaskScheduler
+        // worker 无需重新拉取远端列表即可验证 hostname。每次缓存更新成功后由
+        // domain-verification.ts 调用；当共享缓存缺失或过期时，worker 的 24 小时
+        // TTL 闸门会回落到编译期列表。
         AsyncFunction("setVerificationData") { (data: [String: Any]) async in
             let known    = data["knownSha256List"]    as? [String] ?? []
             let verified = data["verifiedSha256List"] as? [String] ?? []
             BackgroundConfigRefresh.saveDomainVerificationCache(known: known, verified: verified)
         }
 
-        // Mirror JS-managed refresh options into AppGroup UserDefaults so the
-        // BGTaskScheduler worker never opens the JS-owned SQLite database —
-        // a second SQLite library on the same WAL file crashes with SIGBUS.
+        // 把 JS 管理的刷新选项镜像到 AppGroup UserDefaults，使 BGTaskScheduler
+        // worker 永远不会打开 JS 持有的 SQLite 数据库——对同一 WAL 文件使用第二个
+        // SQLite 库会导致 SIGBUS 崩溃。
         AsyncFunction("setBackgroundConfigRefreshOptions") { (options: [String: Any]) async in
             let accelerateUrl = options["accelerateUrl"] as? String ?? ""
             let testFlag      = options["testPrimaryUrlUnavailable"] as? Bool ?? false
@@ -261,44 +254,43 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
             )
         }
 
-        // Register (or update) the native background config refresh task.
-        // Persists URL, userAgent, and interval to AppGroup UserDefaults, then
-        // submits a BGAppRefreshTaskRequest so iOS wakes the app periodically.
+        // 注册（或更新）原生后台配置刷新任务。
+        // 把 URL、userAgent、interval 持久化到 AppGroup UserDefaults，然后提交一个
+        // BGAppRefreshTaskRequest，让 iOS 周期性唤醒 App。
         AsyncFunction("registerBackgroundConfigRefresh") { (url: String, userAgent: String, intervalSeconds: Int) async in
             BackgroundConfigRefresh.saveConfig(url: url, userAgent: userAgent, intervalSeconds: intervalSeconds)
             BackgroundConfigRefresh.scheduleNextRefresh()
             NSLog("[ExpoOneBox] Background config refresh registered (interval=\(intervalSeconds)s)")
         }
 
-        // Execute a config refresh immediately (used from foreground / dev screen).
-        // Uses the same DNS-resolved fetcher as the background task, with accelerator fallback.
+        // 立即执行一次配置刷新（供前台 / dev 屏幕使用）。
+        // 使用与后台任务相同的 DNS 解析 fetcher，带 accelerator 回落。
         AsyncFunction("executeConfigRefreshNow") { (url: String, userAgent: String) async -> [String: Any] in
             let result = await BackgroundConfigRefresh.executeRefreshWith(url: url, userAgent: userAgent)
-            // Do NOT storeResult here: JS receives the result directly and calls
-            // applyResultToSBConfig() itself. Storing would overwrite any pending
-            // background refresh result and cause the next foreground sync to
-            // replay this manual result as a duplicate 'auto' TaskLog entry.
-            // (Matches the Android module; the persistence slot is reserved for
-            // true background runs — see BackgroundConfigRefresh.registerHandler.)
+            // 此处切勿 storeResult：JS 会直接收到结果并自行调用
+            // applyResultToSBConfig()。若在此存储，会覆盖任何待处理的后台刷新结果，
+            // 并导致下一次前台同步把这个手动结果当作重复的 'auto' TaskLog 条目重放。
+            //（与 Android 模块一致；持久化槽位保留给真正的后台运行——见
+            // BackgroundConfigRefresh.registerHandler。）
             return result.toDictionary()
         }
 
-        // Return the last result stored by the background task (or nil if none).
-        // Call this on foreground to sync native results into JS state.
-        // Clears the stored result after reading so subsequent calls return nil.
+        // 返回后台任务存储的最近一次结果（若无则为 nil）。
+        // 在前台调用此方法，把原生结果同步进 JS 状态。
+        // 读取后会清除存储的结果，因此后续调用返回 nil。
         Function("getLastConfigRefreshResult") { () -> [String: Any]? in
             guard let result = BackgroundConfigRefresh.loadLastResult() else { return nil }
             BackgroundConfigRefresh.clearLastResult()
             return result
         }
 
-        // Whether a background refresh task is currently scheduled.
+        // 当前是否有后台刷新任务已排期。
         AsyncFunction("isBackgroundConfigRefreshRegistered") { () async -> Bool in
             await BackgroundConfigRefresh.isRegistered()
         }
 
-        // Copies the bundled asset (sourceUri = file:// URI) into the AppGroup Caches dir as tun.db.
-        // Skips if the destination already exists. Returns true if copied, false if skipped.
+        // 把打包资源（sourceUri = file:// URI）复制到 AppGroup Caches 目录，命名为 tun.db。
+        // 若目标已存在则跳过。复制返回 true，跳过返回 false。
         AsyncFunction("copy2CacheDbPath") { (sourceUri: String) -> Bool in
             guard let cacheDir = self.appGroupCachesURL() else { return false }
             try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
@@ -315,13 +307,13 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
 
     // MARK: - App Group Paths
 
-    /// The shared App Group container URL, or nil if unavailable.
-    /// Single derivation point for `Self.appGroupID` file access.
+    /// 共享的 App Group 容器 URL，不可用时为 nil。
+    /// Self.appGroupID 文件访问的唯一派生点。
     private func appGroupContainerURL() -> URL? {
         FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: Self.appGroupID)
     }
 
-    /// `<AppGroup>/Library/Caches` — must match the extension's FilePath.
+    /// <AppGroup>/Library/Caches——必须与 extension 的 FilePath 一致。
     private func appGroupCachesURL() -> URL? {
         appGroupContainerURL()?
             .appendingPathComponent("Library", isDirectory: true)
@@ -330,9 +322,9 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
 
     // MARK: - Initialization
 
-    /// Sync current VPN state on module creation.
-    /// NEVPNStatusDidChange does NOT fire on app launch if VPN was already running,
-    /// so we must load managers and set the initial status ourselves.
+    /// 在模块创建时同步当前 VPN 状态。
+    /// 若 VPN 已在运行，NEVPNStatusDidChange 在 App 启动时不会触发，因此必须
+    /// 自己加载 manager 并设置初始状态。
     private func syncInitialVPNStatus() async {
         do {
             let managers = try await NETunnelProviderManager.loadAllFromPreferences()
@@ -349,7 +341,7 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
     private func initializeLibbox() {
         guard !isInitialized else { return }
 
-        // Use App Group shared directory — must match extension's FilePath
+        // 使用 App Group 共享目录——必须与 extension 的 FilePath 一致
         guard let sharedDir = appGroupContainerURL(),
               let cacheDir = appGroupCachesURL() else {
             NSLog("[ExpoOneBox] ERROR: App Group container not available")
@@ -362,7 +354,7 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         }
 
-        // Use relativePath matching the reference project's pattern
+        // 使用 relativePath，与参考项目的模式一致
         let options = LibboxSetupOptions()
         options.basePath = sharedDir.relativePath
         options.workingPath = workingDir.relativePath
@@ -372,12 +364,12 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
         LibboxSetup(options, &setupError)
         if let setupError {
             NSLog("[ExpoOneBox] Setup error: \(setupError.localizedDescription)")
-            // Non-fatal: continue anyway, extension will do its own setup
+            // 非致命：继续执行，extension 会做自己的 setup
         }
 
-        // Match reference: main app only calls LibboxSetup + LibboxSetLocale
-        // Do NOT call LibboxRedirectStderr or LibboxSetMemoryLimit in main app
-        // Those are only for the extension process
+        // 与参考项目一致：主 App 只调用 LibboxSetup + LibboxSetLocale
+        // 主 App 中切勿调用 LibboxRedirectStderr 或 LibboxSetMemoryLimit
+        // 那些只用于 extension 进程
         LibboxSetLocale(Locale.current.identifier)
 
         isInitialized = true
@@ -386,8 +378,8 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
 
     // MARK: - VPN Manager
 
-    /// Load existing or create a new NETunnelProviderManager.
-    /// Creating/saving triggers the system "Allow VPN" dialog if needed.
+    /// 加载已有或创建新的 NETunnelProviderManager。
+    /// 创建/保存时会在需要时触发系统的 "Allow VPN" 弹窗。
     private func loadOrCreateManager() async throws -> NETunnelProviderManager {
         let managers = try await NETunnelProviderManager.loadAllFromPreferences()
         let manager = managers.first ?? NETunnelProviderManager()
@@ -410,9 +402,9 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
 
     // MARK: - Config Processing
 
-    /// Swift equivalent of Android's processConfig.
-    /// Rewrites `experimental.cache_file.path` to the absolute path of
-    /// `<AppGroup>/Library/Caches/tun.db` so sing-box can find the pre-seeded cache.
+    /// Android processConfig 的 Swift 等价实现。
+    /// 把 experimental.cache_file.path 改写为 <AppGroup>/Library/Caches/tun.db 的
+    /// 绝对路径，让 sing-box 能找到预置的缓存。
     private func processConfig(_ config: String) -> String {
         guard
             let data = config.data(using: .utf8),
@@ -464,7 +456,7 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
             throw error
         }
 
-        // Load or create the VPN manager
+        // 加载或创建 VPN manager
         let manager: NETunnelProviderManager
         if let existing = vpnManager {
             try await existing.loadFromPreferences()
@@ -474,8 +466,8 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
         }
         self.vpnManager = manager
 
-        // Always ensure the profile is enabled and save before starting
-        // (matching reference project's ExtensionProfile.start() pattern)
+        // 启动前始终确保 profile 已启用并保存
+        //（与参考项目 ExtensionProfile.start() 的写法一致）
         manager.isEnabled = true
         try await manager.saveToPreferences()
         try await manager.loadFromPreferences()
@@ -484,12 +476,12 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
         userInitiatedStop = false
         updateStatus(1) // Starting
 
-        // Rewrite experimental.cache_file.path to the correct absolute path
+        // 把 experimental.cache_file.path 改写为正确的绝对路径
         let processedConfig = processConfig(config)
         self.lastStartConfig = processedConfig
         self.writeLastStartConfig(processedConfig)
 
-        // Prepare options (same dict the extension receives in startTunnel)
+        // 准备 options（与 extension 在 startTunnel 中收到的字典相同）
         let options = prepareStartOptions(config: processedConfig)
 
         do {
@@ -513,11 +505,11 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
 
         updateStatus(3) // Stopping
 
-        // Disconnect traffic monitor first
+        // 先断开流量监控
         trafficMonitor?.disconnect()
         trafficMonitor = nil
 
-        // Try graceful close via standalone CommandClient (same as reference's ExtensionProfile.stop())
+        // 通过 standalone CommandClient 尝试优雅关闭（与参考项目 ExtensionProfile.stop() 一致）
         do {
             try await Task.detached(priority: .userInitiated) {
                 try LibboxNewStandaloneCommandClient()!.serviceClose()
@@ -554,19 +546,19 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
             isStartingUp = false
             updateStatus(0)
         case .disconnected:
-            // Detect startup failure via the isStartingUp flag, not currentStatus==1:
-            // NEVPNStatus can pass through connecting→disconnecting→disconnected, so by the
-            // time it reaches disconnected currentStatus is already 3 (disconnecting), not 1.
+            // 通过 isStartingUp 标志检测启动失败，而不是 currentStatus==1：
+            // NEVPNStatus 可能走 connecting→disconnecting→disconnected，因此到达
+            // disconnected 时 currentStatus 已经是 3（disconnecting），而非 1。
             let wasStarting = self.isStartingUp
             NSLog("[ExpoOneBox] VPN status: disconnected, wasStarting=\(wasStarting), currentStatus=\(currentStatus)")
             isStartingUp = false
             trafficMonitor?.disconnect()
             trafficMonitor = nil
             updateStatus(0)
-            // Actively detect startup failure: read the error from the shared file and push it to JS.
+            // 主动检测启动失败：从共享文件读取错误并推送给 JS。
             if wasStarting {
                 NSLog("[ExpoOneBox] Startup failure path entered, scheduling error check...")
-                // Delay 500ms so the extension process's file write has flushed to disk.
+                // 延迟 500ms，确保 extension 进程的文件写入已刷到磁盘。
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
                     guard let self else {
                         NSLog("[ExpoOneBox] self was deallocated before error check")
@@ -579,19 +571,15 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
                         self.sendError(type: "StartServiceFailed", message: errMsg, source: "binary")
                     } else {
                         NSLog("[ExpoOneBox] No error in file, sending generic failure")
-                        // Emit a stable machine token, not user-visible text — the
-                        // JS layer maps it to a localized string (i18n follow-up owned
-                        // by the coordinator). Keeps the native layer i18n-free.
+                        // 发出稳定的机器 token，而非用户可见文本——由 JS 层映射为
+                        // 本地化字符串。使原生层保持 i18n-free。
                         self.sendError(type: "StartServiceFailed", message: "START_FAILED_GENERIC", source: "binary")
                     }
                 }
             } else if !userInitiatedStop {
-                // The tunnel dropped after a successful start without a user-initiated
-                // stop — surface it so the failure is observable, not just the startup
-                // window (audit D4-06). A crash writes stderr rather than
-                // startup_error, so report even when the startup file is empty.
-                // iOS-device runtime verification pending — NE VPN does not run in the
-                // simulator.
+                // 隧道在成功启动后、且没有用户主动停止的情况下掉线——把它暴露
+                // 出来，使失败可观察，而不仅覆盖启动窗口。crash 写的是 stderr 而非
+                // startup_error，因此即便 startup 文件为空也要上报。
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
                     guard let self else { return }
                     let errMsg = self.readStartupError()
@@ -618,7 +606,7 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
 
     // MARK: - Traffic Monitoring
 
-    /// Connect a CommandClient to the extension's CommandServer for live traffic data.
+    /// 连接一个 CommandClient 到 extension 的 CommandServer，获取实时流量数据。
     private func startTrafficMonitor() {
         guard trafficMonitor == nil else { return }
         let monitor = TrafficMonitor(module: self)
@@ -643,8 +631,8 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
 
     // MARK: - Startup Error File
 
-    /// Read the shared startup_error.txt written by the Network Extension on failure.
-    /// Returns empty string if the file doesn't exist or the last start succeeded.
+    /// 读取 Network Extension 失败时写入的共享 startup_error.txt。
+    /// 若文件不存在或上次启动成功，返回空字符串。
     private func readStartupError() -> String {
         guard let sharedDir = appGroupContainerURL() else { return "" }
         let errorFilePath = sharedDir.appendingPathComponent("startup_error.txt")
@@ -696,9 +684,8 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
     }
 
     internal func sendLog(message: String) {
-        // Gate the event emission itself (matching Android's appendLogs), not just
-        // the NSLog side-effect — otherwise JS keeps receiving core logs after the
-        // user disables them.
+        // 对事件发送本身设闸（与 Android 的 appendLogs 一致），而不仅是 NSLog
+        // 副作用——否则用户关闭后 JS 仍会持续收到 core 日志。
         guard coreLogEnabled else { return }
         NSLog("[sing-box] %@", message)
         sendEvent("onLog", [
@@ -706,16 +693,14 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
         ])
     }
 
-    /// Emit a native-layer log line to JS.
+    /// 向 JS 发出一条原生层日志。
     ///
-    /// Distinct from `sendLog` (libbox / sing-box core output). This
-    /// channel carries the Swift module's own activity — VPN manager
-    /// lifecycle, permission flows, Network Extension transitions — so
-    /// the user can distinguish "the JS–native bridge is alive" from
-    /// "the core is running."
+    /// 与 sendLog（libbox / sing-box core 输出）不同。此通道承载 Swift 模块
+    /// 自身的活动——VPN manager 生命周期、权限流程、Network Extension 状态
+    /// 转换——让用户能区分"JS–原生 bridge 是否存活"与"core 是否在运行"。
     internal func sendNativeLog(level: String, tag: String, message: String) {
-        // Clamp to the level union the JS `onNativeLog` payload declares
-        // ('info' | 'warn' | 'error'), mirroring the Kotlin side (D2-16).
+        // 收敛到 JS onNativeLog 载荷声明的等级并集（'info' | 'warn' | 'error'），
+        // 与 Kotlin 侧保持一致。
         let normalizedLevel: String
         switch level.lowercased() {
         case "warn", "warning": normalizedLevel = "warn"

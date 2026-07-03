@@ -17,14 +17,14 @@ import kotlinx.coroutines.CancellationException
 
 private const val TAG = "BackgroundConfigWorker"
 internal const val BG_PREFS_NAME = "expo_onebox_background_config"
-// Refresh options mirrored from JS via `setBackgroundConfigRefreshOptions`.
-// Never read the JS-owned SQLite database here: a second SQLite library on
-// the same WAL file breaks in-process POSIX locking and crashes with SIGBUS.
+// 通过 `setBackgroundConfigRefreshOptions` 从 JS 镜像过来的刷新选项。
+// 切勿在此读取 JS 持有的 SQLite 数据库：同一个 WAL 文件上再挂一个
+// SQLite 库会破坏进程内 POSIX 锁并以 SIGBUS 崩溃。
 private const val KEY_ACCELERATE_URL               = "accelerate_url"
 private const val KEY_TEST_PRIMARY_URL_UNAVAILABLE = "test_primary_url_unavailable"
 private val gson = Gson()
 
-// MARK: - Result model
+// MARK: - 结果模型
 
 data class ConfigRefreshResult(
     val status: String,           // "success" | "failed" | "skipped"
@@ -65,7 +65,7 @@ class BackgroundConfigWorker(
 
     companion object {
         const val WORK_NAME = "cloud.oneoh.networktools.config-refresh"
-        // WorkManager enforces a minimum of 15 minutes for periodic work.
+        // WorkManager 对周期性工作强制最少 15 分钟。
         private const val MIN_INTERVAL_SECONDS = 15L * 60L
 
         fun schedule(context: Context, intervalSeconds: Long) {
@@ -100,9 +100,8 @@ class BackgroundConfigWorker(
         }
 
         fun storeResult(context: Context, result: ConfigRefreshResult) {
-            // Lock on the same monitor as ExpoOneBoxModule.getLastConfigRefreshResult
-            // so a write can't slip between that reader's load and clear and be
-            // silently dropped.
+            // 锁在与 ExpoOneBoxModule.getLastConfigRefreshResult 相同的 monitor 上，
+            // 使写入不会插在该读取方的 load 与 clear 之间而被静默丢弃。
             synchronized(BackgroundConfigWorker::class.java) {
                 context.getSharedPreferences(BG_PREFS_NAME, Context.MODE_PRIVATE)
                     .edit()
@@ -115,9 +114,9 @@ class BackgroundConfigWorker(
             val json = context.getSharedPreferences(BG_PREFS_NAME, Context.MODE_PRIVATE)
                 .getString("last_result", null) ?: return null
             return try {
-                // Deserialize into the typed data class first so numeric fields become
-                // proper Long/String values. Using Map::class.java produces LazilyParsedNumber
-                // for all numbers, which the Expo Modules API cannot serialize to JS.
+                // 先反序列化为带类型的 data class，使数值字段成为正确的 Long/String 值。
+                // 用 Map::class.java 会把所有数字变成 LazilyParsedNumber，而 Expo Modules API
+                // 无法把它序列化到 JS。
                 gson.fromJson(json, ConfigRefreshResult::class.java).toMap()
             } catch (_: Exception) { null }
         }
@@ -127,17 +126,17 @@ class BackgroundConfigWorker(
                 .edit().remove("last_result").apply()
         }
 
-        // ─── Domain-verification cache (pushed from JS) ──────────────────────
+        // ─── 域名验证缓存（从 JS 推送）──────────────────────
 
         private const val KEY_KNOWN_DOMAIN_SHA256     = "known_domain_sha256_list"
         private const val KEY_VERIFIED_DOMAIN_SHA256  = "verified_domain_sha256_list"
         private const val KEY_DOMAIN_VERIFICATION_AT  = "domain_verification_updated_at"
-        /// Mirrors `CACHE_TTL_MS` in `src/utils/domain-verification.ts` (24 h).
+        /// 对应 `src/utils/domain-verification.ts` 中的 `CACHE_TTL_MS`（24 h）。
         internal const val DOMAIN_VERIFICATION_TTL_MS = 24L * 60L * 60L * 1000L
 
-        /// Called from JS (`ExpoOneBoxModule.setVerificationData`) after every
-        /// successful `updateVerificationData`. Writes a JSON array + timestamp
-        /// into the same SharedPreferences the worker already reads.
+        /// 在每次 `updateVerificationData` 成功后由 JS
+        /// （`ExpoOneBoxModule.setVerificationData`）调用。把一个 JSON 数组 + 时间戳
+        /// 写入 worker 已在读取的同一份 SharedPreferences。
         fun saveDomainVerificationCache(
             context: Context,
             known: List<String>,
@@ -151,9 +150,8 @@ class BackgroundConfigWorker(
                 .apply()
         }
 
-        /// Returns the JS-pushed allowlist if present and not older than the TTL.
-        /// Null result signals the caller should fall back to the compile-time
-        /// list + live fetch.
+        /// 若 JS 推送的 allowlist 存在且未超过 TTL，则返回它。
+        /// 返回 null 表示调用方应回落到编译期列表 + 实时抓取。
         internal fun loadFreshDomainVerificationCache(
             context: Context,
         ): Pair<List<String>, List<String>>? {
@@ -172,11 +170,11 @@ class BackgroundConfigWorker(
             } catch (_: Exception) { null }
         }
 
-        // ─── Refresh options (pushed from JS) ────────────────────────────────
+        // ─── 刷新选项（从 JS 推送）────────────────────────────────
 
-        /// Called from JS (`ExpoOneBoxModule.setBackgroundConfigRefreshOptions`)
-        /// at app init and whenever the dev toggle flips. Full overwrite of
-        /// both values, idempotent. Same prefs file the worker already reads.
+        /// 在 app 初始化以及每次 dev 开关翻转时由 JS
+        /// （`ExpoOneBoxModule.setBackgroundConfigRefreshOptions`）调用。
+        /// 全量覆盖两个值，幂等。与 worker 已在读取的同一份 prefs 文件。
         fun saveRefreshOptions(
             context: Context,
             accelerateUrl: String,
@@ -207,9 +205,9 @@ class BackgroundConfigWorker(
         storeResult(applicationContext, result)
         return when {
             result.status == "success" -> Result.success()
-            // A permanent HTTP 4xx (e.g. 403 revoked config URL) will never
-            // recover; letting WorkManager exponential-backoff retry it loops
-            // forever and wastes wakeups + traffic. Network errors and 5xx retry.
+            // 永久性的 HTTP 4xx（例如 403 表示配置 URL 已吊销）永远不会恢复；
+            // 让 WorkManager 指数退避重试会永远循环，浪费唤醒 + 流量。
+            // 网络错误和 5xx 才重试。
             isNonRetryableHttpError(result) -> Result.failure()
             else -> Result.retry()
         }
@@ -217,22 +215,20 @@ class BackgroundConfigWorker(
 }
 
 /**
- * True when [result] failed with a primary HTTP 4xx status, which is permanent
- * and must not be retried by WorkManager. Fallback both-failed errors (which
- * begin with a transient primary network error) stay retryable.
+ * 当 [result] 因主 HTTP 4xx 状态失败时返回 true，该状态是永久性的，
+ * WorkManager 不得重试。回落 both-failed 错误（以瞬时的主网络错误开头）
+ * 仍保持可重试。
  */
 private fun isNonRetryableHttpError(result: ConfigRefreshResult): Boolean {
     val error = result.error ?: return false
     return Regex("^HTTP 4\\d\\d$").matches(error)
 }
 
-// MARK: - Domain verification
+// MARK: - 域名验证
 
-// Compile-time allowlist. Each entry is the SHA256 of an approved suffix
-// label; verifyDomain hashes every progressive suffix of the target
-// hostname (shortest first) and returns true on the first match, so
-// broader entries approve broader subtrees. Never record the pre-image
-// in this file or any comment.
+// 编译期 allowlist。每一项是一个已批准后缀标签的 SHA256；verifyDomain 会对
+// 目标 hostname 的每个渐进后缀（最短优先）做哈希，并在第一个匹配处返回 true，
+// 因此更宽的项批准更宽的子树。切勿在本文件或任何注释中记录其原文（pre-image）。
 private val KNOWN_DOMAIN_SHA256_LIST = listOf(
     "183a5526e76751b07cd57236bc8f253d5424e02a3fc7da7c30f80919e975125a",
     "59fe86216c23236fb4c6ab50cd8d1e261b7cad754e3e7cab33058df5b32d12e1",
@@ -241,40 +237,31 @@ private val KNOWN_DOMAIN_SHA256_LIST = listOf(
 private const val VERIFIED_LIST_URL   = "https://www.sing-box.net/verified_subscriptions_sha256.txt"
 
 /**
- * Progressive suffix candidates, shortest first.
- *   "a.b.c" -> ["c", "b.c", "a.b.c"]
- */
-// hostnameSuffixCandidates now lives in the shared pure core DomainSuffix.kt
-// (audit D3c-02), locked by golden/domain-suffix.json.
-
-/**
- * Returns true iff any suffix of [hostname] (shortest first) hashes to an
- * entry in the allowlist. Preference order:
- *   1. JS-pushed cache in SharedPreferences (24h TTL, zero network).
- *   2. Compile-time `KNOWN_DOMAIN_SHA256_LIST` — always available.
- *   3. Live fetch from `VERIFIED_LIST_URL` — only when shared cache is
- *      missing or expired (e.g. periodic worker fires before JS has ever
- *      called `setVerificationData`).
+ * 当 [hostname] 的任一后缀（最短优先）哈希后命中 allowlist 中的某项时返回 true。
+ * 优先顺序：
+ *   1. SharedPreferences 中 JS 推送的缓存（24h TTL，零网络）。
+ *   2. 编译期 `KNOWN_DOMAIN_SHA256_LIST` —— 始终可用。
+ *   3. 从 `VERIFIED_LIST_URL` 实时抓取 —— 仅当共享缓存缺失或过期时
+ *      （例如周期 worker 在 JS 从未调用过 `setVerificationData` 之前就触发）。
  */
 private suspend fun verifyDomain(hostname: String, context: Context): Boolean {
     val candidates = hostnameSuffixCandidates(hostname)
     val hashed     = candidates.map { sha256Hex(it) }
     val hashedSet  = hashed.toSet()
 
-    // Source 1 — JS-pushed cache.
+    // 来源 1 —— JS 推送的缓存。
     BackgroundConfigWorker.loadFreshDomainVerificationCache(context)?.let { (known, verified) ->
         val union = (known + verified).toSet()
         if (hashedSet.any { it in union }) return true
-        // Cache is fresh but did not match; still honour the compile-time
-        // list below before giving up.
+        // 缓存是新鲜的但未命中；放弃前仍先参考下面的编译期列表。
         if (hashed.any { it in KNOWN_DOMAIN_SHA256_LIST }) return true
         return false
     }
 
-    // Source 2 — compile-time fallback.
+    // 来源 2 —— 编译期回落。
     if (hashed.any { it in KNOWN_DOMAIN_SHA256_LIST }) return true
 
-    // Source 3 — live fetch (recovery path only).
+    // 来源 3 —— 实时抓取（仅恢复路径）。
     return try {
         val conn = java.net.URL(VERIFIED_LIST_URL).openConnection() as java.net.HttpURLConnection
         conn.connectTimeout = 10_000
@@ -288,10 +275,9 @@ private suspend fun verifyDomain(hostname: String, context: Context): Boolean {
     }
 }
 
-// MARK: - accelerated URL helpers
-// (sha256Hex now lives in the shared pure core Sha256.kt — audit C4 / Batch 3)
+// MARK: - 加速 URL 辅助函数
 
-/** Build the accelerated variant: <accelerateBase>/<sha256(host)><path+query> */
+/** 构造加速变体：<accelerateBase>/<sha256(host)><path+query> */
 private fun buildAcceleratedUrl(originalUrl: String, accelerateBase: String): String {
     val uri = android.net.Uri.parse(originalUrl)
     val host = uri.host ?: return originalUrl
@@ -327,7 +313,7 @@ private fun readAccelerateUrl(context: Context): String? {
         ?.takeIf { it.isNotEmpty() }
 }
 
-// MARK: - Fallback preflight (shared by both fetch executors)
+// MARK: - 回落预检（两个 fetch executor 共用）
 
 internal data class FallbackPreflight(
     val host: String,
@@ -338,10 +324,9 @@ internal data class FallbackPreflight(
 )
 
 /**
- * Shared preamble for [fetchProfileConfigWithFallback] and [executeRefreshWith]:
- * resolve the host, verify the domain, and read the JS-pushed test/accelerate
- * switches. Behaviour is identical for both callers; [logLabel] only tags the
- * diagnostic line so the two call sites stay distinguishable in logcat.
+ * [fetchProfileConfigWithFallback] 与 [executeRefreshWith] 的共享前置逻辑：
+ * 解析 host、验证域名，并读取 JS 推送的 test/accelerate 开关。两个调用方的行为
+ * 完全相同；[logLabel] 只给诊断行打标签，使两个调用点在 logcat 中可区分。
  */
 private suspend fun prepareFallbackPreflight(
     context: Context,
@@ -352,56 +337,51 @@ private suspend fun prepareFallbackPreflight(
     val domainSha = sha256Hex(host)
     val verified  = verifyDomain(host, context)
     if (!verified) {
-        Log.w(TAG, "[CONFIG_LOAD] 方式=DOMAIN_UNVERIFIED, 域名SHA256=$domainSha, 加速备用已禁用")
+        Log.w(TAG, "[CONFIG_LOAD] method=DOMAIN_UNVERIFIED, domainSha256=$domainSha, accelerator fallback disabled")
     }
     val testPrimaryUnavailable = isTestPrimaryUrlUnavailableEnabled(context)
     val accelerateUrl = readAccelerateUrl(context)
     Log.i(
         TAG,
-        "[CONFIG_LOAD] 请求前开关状态($logLabel): testPrimaryUnavailable=$testPrimaryUnavailable, accelerate=${summarizeAccelerateUrl(accelerateUrl)}",
+        "[CONFIG_LOAD] pre-request switch state($logLabel): testPrimaryUnavailable=$testPrimaryUnavailable, accelerate=${summarizeAccelerateUrl(accelerateUrl)}",
     )
     return FallbackPreflight(host, domainSha, verified, testPrimaryUnavailable, accelerateUrl)
 }
 
-// MARK: - Shared fetch executor (foreground native fetchProfileConfig)
+// MARK: - 共享 fetch executor（前台原生 fetchProfileConfig）
 
 /**
- * Native fetchProfileConfig path with optional accelerator fallback.
+ * 带可选加速回落的原生 fetchProfileConfig 路径。
  *
- * Rules match executeRefreshWith:
- *   1. Try primary URL first
- *   2. Only network exceptions trigger fallback (HTTP non-2xx does not)
- *   3. Fallback requires verified domain + a JS-pushed accelerate URL
+ * 规则与 executeRefreshWith 一致：
+ *   1. 先尝试主 URL
+ *   2. 只有网络异常才触发回落（HTTP 非 2xx 不触发）
+ *   3. 回落要求域名已验证 + JS 推送的加速 URL
  *
- * When the JS-pushed `testPrimaryUrlUnavailable` option is on, primary
- * request actively throws to simulate network failure for fallback testing.
+ * 当 JS 推送的 `testPrimaryUrlUnavailable` 选项开启时，主请求会主动抛出，
+ * 以模拟网络失败来测试回落。
  *
- * Cancellation is rethrown — it must never trigger accelerator fallback.
+ * cancellation 会被重新抛出——它绝不能触发加速回落。
  */
-/** Outcome of the shared [fetchWithFallback] control flow (audit D3c-01 / C4). */
+/** 共享 [fetchWithFallback] 控制流的结果。 */
 internal sealed class FallbackOutcome {
-    /** A primary result (any HTTP status) or a successful accelerated fetch. */
+    /** 主结果（任意 HTTP 状态）或一次成功的加速抓取。 */
     data class Ok(
         val result: ConfigFetchResult,
         val method: String,        // "primary" | "fallback"
         val actualUrl: String,
-        val primaryError: String? = null, // set when method == "fallback"
+        val primaryError: String? = null, // 当 method == "fallback" 时设置
     ) : FallbackOutcome()
-    /** The primary threw a network error and fallback was skipped. */
+    /** 主请求抛出网络错误且回落被跳过。 */
     data class NoFallback(val primaryError: String, val reason: String) : FallbackOutcome() // "unverified" | "no-accelerator"
-    /** The primary threw and the accelerated fetch also threw. */
+    /** 主请求抛出，且加速抓取也抛出。 */
     data class BothFailed(val primaryError: String, val accError: String, val accUrl: String) : FallbackOutcome()
 }
 
 /**
- * The primary → gate → accelerator control flow, extracted so the foreground
- * [fetchProfileConfigWithFallback] and the background [executeRefreshWith] share
- * one copy instead of two (audit D3c-01 / C4). [fetch] and [log] are injected so
- * the decision is pure and JVM-testable (see `FetchWithFallbackTest`): the outcome
- * depends only on [preflight] and the [fetch] results. HTTP errors return as the
- * primary Ok (non-2xx never falls back); only a network throw runs the gate;
- * cancellation is always rethrown. The decision table is golden-locked in
- * `golden/fetch-fallback-decision.json`.
+ * 主 → gate → 加速器 的控制流。[fetch] 与 [log] 以注入方式传入，使决策是纯的、
+ * 可在 JVM 上测试：结果只取决于 [preflight] 与 [fetch] 的结果。HTTP 错误作为主
+ * Ok 返回（非 2xx 从不回落）；只有网络抛出才会走 gate；cancellation 始终重新抛出。
  */
 internal suspend fun fetchWithFallback(
     preflight: FallbackPreflight,
@@ -413,16 +393,16 @@ internal suspend fun fetchWithFallback(
 ): FallbackOutcome {
     val primaryError: String = try {
         if (preflight.testPrimaryUnavailable) {
-            log("[CONFIG_LOAD] 测试模式: 主URL主动抛出异常")
+            log("[CONFIG_LOAD] test mode: primary URL actively throwing exception")
             throwPrimaryUnavailableForTest()
         }
-        // HTTP errors (non-2xx) do not trigger fallback — return the response as-is.
+        // HTTP 错误（非 2xx）不触发回落——原样返回响应。
         return FallbackOutcome.Ok(fetch(url, userAgent), "primary", url)
     } catch (ce: CancellationException) {
         throw ce
     } catch (primaryEx: Exception) {
         val err = primaryEx.message ?: "Unknown error"
-        log("[CONFIG_LOAD] 主URL异常: $err, 检查回落条件")
+        log("[CONFIG_LOAD] primary URL exception: $err, checking fallback conditions")
         err
     }
 
@@ -430,7 +410,7 @@ internal suspend fun fetchWithFallback(
     if (preflight.accelerateUrl.isNullOrBlank()) return FallbackOutcome.NoFallback(primaryError, "no-accelerator")
 
     val accUrl = buildAccelUrl(url, preflight.accelerateUrl)
-    log("[CONFIG_LOAD] 主URL失败, 尝试加速回落: ${summarizeAccelerateUrl(accUrl)}, 原因: $primaryError")
+    log("[CONFIG_LOAD] primary URL failed, trying accelerator fallback: ${summarizeAccelerateUrl(accUrl)}, reason: $primaryError")
     return try {
         FallbackOutcome.Ok(fetch(accUrl, userAgent), "fallback", accUrl, primaryError)
     } catch (ce: CancellationException) {
@@ -453,17 +433,17 @@ internal suspend fun fetchProfileConfigWithFallback(
     }
 }
 
-// MARK: - Shared refresh executor (foreground + background)
+// MARK: - 共享 refresh executor（前台 + 后台）
 
 /**
- * Fetch [url] with fallback to the JS-pushed accelerate URL.
- * Core logic (unified):
- *   1. Try [url] (primary)
- *   2. If fails (network exception) and domain verified → try accelerated URL
- *   3. Return result with method info
- * HTTP errors (non-2xx) do NOT trigger fallback.
- * Test mode: actively throws on primary URL to test fallback path.
- * Cancellation is rethrown — it must never trigger accelerator fallback.
+ * 抓取 [url]，失败时回落到 JS 推送的加速 URL。
+ * 核心逻辑：
+ *   1. 尝试 [url]（主）
+ *   2. 若失败（网络异常）且域名已验证 → 尝试加速 URL
+ *   3. 返回带 method 信息的结果
+ * HTTP 错误（非 2xx）不触发回落。
+ * 测试模式：在主 URL 上主动抛出以测试回落路径。
+ * cancellation 会被重新抛出——它绝不能触发加速回落。
  */
 internal suspend fun executeRefreshWith(
     context: Context,
@@ -474,9 +454,8 @@ internal suspend fun executeRefreshWith(
     val timestamp = Instant.now().toString()
     val preflight = prepareFallbackPreflight(context, url, "executeRefresh")
 
-    // The primary → gate → accelerator control flow is shared with
-    // fetchProfileConfigWithFallback (audit D3c-01); this only interprets the
-    // outcome into a ConfigRefreshResult + CONFIG_LOAD diagnostics.
+    // 主 → gate → 加速器 的控制流与 fetchProfileConfigWithFallback 共享；
+    // 这里只把结果解释为 ConfigRefreshResult + CONFIG_LOAD 诊断。
     return when (val o = fetchWithFallback(preflight, url, userAgent)) {
         is FallbackOutcome.Ok -> {
             val durationMs  = System.currentTimeMillis() - start
@@ -484,7 +463,7 @@ internal suspend fun executeRefreshWith(
             val headerValue = o.result.headers["subscription-userinfo"]
             when {
                 o.method == "primary" && !ok2xx -> {
-                    Log.w(TAG, "[CONFIG_LOAD] 方式=HTTP_ERROR_NO_FALLBACK, HTTP ${o.result.statusCode}, 不触发回落")
+                    Log.w(TAG, "[CONFIG_LOAD] method=HTTP_ERROR_NO_FALLBACK, HTTP ${o.result.statusCode}, no fallback")
                     ConfigRefreshResult(
                         status    = "failed",
                         error     = "HTTP ${o.result.statusCode}",
@@ -495,7 +474,7 @@ internal suspend fun executeRefreshWith(
                 }
                 o.method == "primary" -> {
                     val info = parseUserinfo(headerValue)
-                    Log.i(TAG, "[CONFIG_LOAD] 方式=PRIMARY, 上传=${info.upload}, 下载=${info.download}, 总计=${info.total}, 过期=${info.expire}")
+                    Log.i(TAG, "[CONFIG_LOAD] method=PRIMARY, upload=${info.upload}, download=${info.download}, total=${info.total}, expire=${info.expire}")
                     ConfigRefreshResult(
                         status             = "success",
                         content            = o.result.body,
@@ -510,9 +489,9 @@ internal suspend fun executeRefreshWith(
                     )
                 }
                 !ok2xx -> {
-                    // Accelerated fetch returned an HTTP error → both failed.
+                    // 加速抓取返回了 HTTP 错误 → 两者都失败。
                     val accError = "HTTP ${o.result.statusCode}"
-                    Log.e(TAG, "[CONFIG_LOAD] 方式=BOTH_FAILED, 加速原因=$accError, 主URL原因=${o.primaryError}")
+                    Log.e(TAG, "[CONFIG_LOAD] method=BOTH_FAILED, accelerator reason=$accError, primary reason=${o.primaryError}")
                     ConfigRefreshResult(
                         status    = "failed",
                         error     = "primary=${o.primaryError} accelerated=$accError",
@@ -524,7 +503,7 @@ internal suspend fun executeRefreshWith(
                 }
                 else -> {
                     val info = parseUserinfo(headerValue)
-                    Log.i(TAG, "[CONFIG_LOAD] 方式=FALLBACK_ACCELERATOR, 上传=${info.upload}, 下载=${info.download}, 总计=${info.total}, 过期=${info.expire}")
+                    Log.i(TAG, "[CONFIG_LOAD] method=FALLBACK_ACCELERATOR, upload=${info.upload}, download=${info.download}, total=${info.total}, expire=${info.expire}")
                     ConfigRefreshResult(
                         status             = "success",
                         content            = o.result.body,
@@ -544,9 +523,9 @@ internal suspend fun executeRefreshWith(
         is FallbackOutcome.NoFallback -> {
             val durationMs = System.currentTimeMillis() - start
             if (o.reason == "unverified") {
-                Log.w(TAG, "[CONFIG_LOAD] 方式=ACCELERATOR_SKIPPED, 原因=域名未验证 (SHA256=${preflight.domainSha}), 主URL原因: ${o.primaryError}")
+                Log.w(TAG, "[CONFIG_LOAD] method=ACCELERATOR_SKIPPED, reason=domain unverified (SHA256=${preflight.domainSha}), primary reason: ${o.primaryError}")
             } else {
-                Log.w(TAG, "[CONFIG_LOAD] 方式=ACCELERATOR_UNAVAILABLE, 原因=加速URL未配置, 主URL原因: ${o.primaryError}")
+                Log.w(TAG, "[CONFIG_LOAD] method=ACCELERATOR_UNAVAILABLE, reason=accelerate URL not configured, primary reason: ${o.primaryError}")
             }
             ConfigRefreshResult(
                 status    = "failed",
@@ -558,7 +537,7 @@ internal suspend fun executeRefreshWith(
         }
         is FallbackOutcome.BothFailed -> {
             val durationMs = System.currentTimeMillis() - start
-            Log.e(TAG, "[CONFIG_LOAD] 方式=BOTH_FAILED, 加速原因=${o.accError}, 主URL原因=${o.primaryError}")
+            Log.e(TAG, "[CONFIG_LOAD] method=BOTH_FAILED, accelerator reason=${o.accError}, primary reason=${o.primaryError}")
             ConfigRefreshResult(
                 status    = "failed",
                 error     = "primary=${o.primaryError} accelerated=${o.accError}",
@@ -571,7 +550,7 @@ internal suspend fun executeRefreshWith(
     }
 }
 
-// MARK: - subscription-userinfo header parser
+// MARK: - subscription-userinfo header 解析器
 
 internal data class TrafficInfo(
     val upload: Long,
@@ -580,9 +559,8 @@ internal data class TrafficInfo(
     val expire: Long,
 )
 
-// C6: one of 4 platform copies of this parser (Android + iOS + JS + web stub).
-// Overflow behaviour is not yet unified — pending the coordinator's golden-sample
-// lock. Keep this impl unchanged until then.
+// 这是该解析器在 4 个平台上的副本之一（Android + iOS + JS + web stub）。
+// 溢出行为尚未统一，在统一之前请保持本实现不变。
 internal fun parseUserinfo(header: String?): TrafficInfo {
     fun extract(key: String): Long {
         val match = Regex("$key=(\\d+)").find(header ?: "") ?: return 0L

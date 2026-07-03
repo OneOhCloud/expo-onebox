@@ -6,11 +6,10 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 /**
- * Kotlin runner for the DNS A-record parser golden lock (audit C7 / D3c-04 /
- * Batch 3). Loads the SAME golden/dns-arecord.json the Swift runner
- * (DnsParseGoldenCheck) uses. The Kotlin parser validates the header (txID/RCODE)
- * itself, so the fixture's txID is passed through. Run:
- * ./gradlew :expo-onebox:testDebugUnitTest
+ * DNS A 记录解析器 golden 锁的 Kotlin 运行器。加载与 Swift 运行器共享的
+ * 同一份 golden 样本，使各端保持一致。Kotlin 解析器自身校验头部
+ * （txID/RCODE），因此 fixture 的 txID 会被透传。
+ * 运行：./gradlew :expo-onebox:testDebugUnitTest
  */
 class DnsParseTest {
     private fun hexToBytes(s: String): ByteArray =

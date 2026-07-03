@@ -1,11 +1,7 @@
 import Foundation
 
-// Cross-platform pure core for the `subscription-userinfo` HTTP header parser
-// (audit C6 / D3c-03 / Batch 3). Extracted out of BackgroundConfigRefresh so it
-// can be unit-tested in isolation. Behaviour is locked by
-// golden/userinfo.json — the same file the JS (profile-info.test.ts) and Kotlin
-// (ParseUserinfoTest) runners assert against — and verified here by the host
-// `swiftc` runner ios/tests/UserinfoGoldenCheck.swift.
+// subscription-userinfo HTTP 头解析器的跨平台纯核心。从 BackgroundConfigRefresh
+// 中抽出，以便独立做单元测试。
 
 struct UserinfoTraffic {
     let upload: Int64

@@ -1,9 +1,9 @@
 import Foundation
 
-// Host-runnable (`swiftc`) golden-sample runner for the ExitGateway/auto group
-// reducer (audit C2 / Batch 3). Compiled with ../core/ExitGatewayParse.swift, it
-// asserts the ACTUAL parseExitGatewayGroups against golden/exitgateway.json —
-// the same file the Kotlin runner (ExitGatewayParseTest) uses. No simulator:
+// 可在宿主机用 swiftc 运行的 golden 样本 runner，针对 ExitGateway/auto group
+// reducer。与 ../core/ExitGatewayParse.swift 一起编译，用真实的
+// parseExitGatewayGroups 对 golden/exitgateway.json 做断言——与 Kotlin runner
+//（ExitGatewayParseTest）使用同一个文件。无需模拟器：
 //
 //   swiftc -parse-as-library ios/core/ExitGatewayParse.swift \
 //     ios/tests/ExitGatewayGoldenCheck.swift -o /tmp/ec \
