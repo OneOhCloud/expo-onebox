@@ -175,7 +175,8 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         }
         logger.log("Stderr redirected to: \(stderrPath)")
 
-        // 强制启用内存限制，确保在内存紧张时系统能正确回收资源，避免被杀死后无法清理的情况
+        // Force-enable the memory limit so the system can reclaim resources under memory
+        // pressure, avoiding an unclean state after the extension is killed.
         LibboxSetMemoryLimit(true)
 
         var error: NSError?

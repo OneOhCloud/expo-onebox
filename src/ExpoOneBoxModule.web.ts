@@ -83,6 +83,12 @@ class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
     this._lastStartConfig = config;
     console.log('[Web Mock] VPN start called with config:', config);
 
+    // Mirror the native "Tunnel" lifecycle line so the web log viewer isn't
+    // perpetually empty. onLog (libbox core output) and onError (startup
+    // failure) stay unmocked — no core runs on web and a synthetic failure is
+    // a product decision, not a mock concern.
+    this.emit('onNativeLog', { level: 'info', tag: 'Tunnel', message: `start() requested, config bytes=${config.length}` });
+
     this._status = VPN_STATUS.STARTING;
     this.emit('onStatusChange', {
       status: VPN_STATUS.STARTING,
@@ -129,6 +135,7 @@ class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
 
   async stop(): Promise<void> {
     console.log('[Web Mock] VPN stop called');
+    this.emit('onNativeLog', { level: 'info', tag: 'Tunnel', message: 'stop() requested' });
 
     this._status = VPN_STATUS.STOPPING;
     this.emit('onStatusChange', {
@@ -235,7 +242,10 @@ class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
   }
 
   async copy2CacheDbPath(_sourceUri: string): Promise<boolean> {
-    return true;
+    // No native working directory on web, so nothing is copied. Mirror the
+    // native "already exists / skipped" branch (false) rather than reporting a
+    // copy that never happened — otherwise _layout.tsx mis-logs "copied".
+    return false;
   }
 
   async fetchProfileConfig(url: string, _userAgent: string) {

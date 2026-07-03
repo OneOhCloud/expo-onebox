@@ -47,6 +47,7 @@ import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.GlobalScope
 import org.json.JSONObject
 import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
 
 // SharedPreferences keys mirrored into the background worker's store.
 // Canonical home is BackgroundConfigWorker.kt (alongside KEY_ACCELERATE_URL);
@@ -557,9 +558,9 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
         // Use app (not reactContext) to avoid NullPointerException during bridge teardown.
         Function("getLastConfigRefreshResult") {
             // Load and clear as one critical section so a concurrent worker write
-            // is not silently dropped between the two calls. The worker's
-            // storeResult must lock on the same monitor for this to be fully
-            // atomic (cross-file follow-up in BackgroundConfigWorker.kt).
+            // is not silently dropped between the two calls. BackgroundConfigWorker
+            // .storeResult locks on this same monitor, so the load/clear pair is
+            // atomic against a concurrent write.
             synchronized(BackgroundConfigWorker::class.java) {
                 val result = BackgroundConfigWorker.loadLastResult(app) ?: return@Function null
                 BackgroundConfigWorker.clearLastResult(app)
@@ -743,7 +744,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
      * update (or on disconnect / 5s timeout), and tears the client down.
      */
     private fun queryProxyNodes(promise: Promise) {
-        var settled = false
+        val settled = AtomicBoolean(false)
         var rawClient: io.nekohasekai.libbox.CommandClient? = null
 
         val options = CommandClientOptions()
@@ -751,8 +752,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
 
         val handler = object : CommandClientHandler {
             private fun settle(all: List<Map<String, Any>>, now: String, autoNow: String) {
-                if (!settled) {
-                    settled = true
+                if (settled.compareAndSet(false, true)) {
                     rawClient?.runCatching { disconnect() }
                     promise.resolve(mapOf("all" to all, "now" to now, "autoNow" to autoNow))
                 }
@@ -787,8 +787,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
 
         // 5 秒超时保护
         Handler(Looper.getMainLooper()).postDelayed({
-            if (!settled) {
-                settled = true
+            if (settled.compareAndSet(false, true)) {
                 client.runCatching { disconnect() }
                 promise.resolve(mapOf("all" to emptyList<Map<String, Any>>(), "now" to "", "autoNow" to ""))
             }
@@ -799,8 +798,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
             try {
                 client.connect()
             } catch (e: Exception) {
-                if (!settled) {
-                    settled = true
+                if (settled.compareAndSet(false, true)) {
                     promise.resolve(mapOf("all" to emptyList<Map<String, Any>>(), "now" to "", "autoNow" to ""))
                 }
             }

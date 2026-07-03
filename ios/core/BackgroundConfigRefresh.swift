@@ -299,7 +299,7 @@ struct BackgroundConfigRefresh {
         }
 
         let hostname = parsedURL.host ?? ""
-        let domainSha = sha256Hex(hostname)
+        let domainSha = sha256HexString(hostname)
         let verified = await verifyDomain(hostname: hostname)
         if !verified {
             NSLog("[CONFIG_LOAD] 方式=DOMAIN_UNVERIFIED, 域名SHA256=%@, 加速备用已禁用", domainSha)
@@ -313,12 +313,8 @@ struct BackgroundConfigRefresh {
                 throw ExpoOneBoxError.testModePrimaryUnavailable
             }
 
-            let primary = try await ConfigFetcher.fetch(url: parsedURL, userAgent: userAgent)
-            // HTTP errors do not trigger fallback.
-            if primary.statusCode < 200 || primary.statusCode >= 300 {
-                return primary
-            }
-            return primary
+            // HTTP errors do not trigger fallback — the primary response is returned as-is.
+            return try await ConfigFetcher.fetch(url: parsedURL, userAgent: userAgent)
         } catch {
             primaryError = error.localizedDescription
         }
@@ -367,7 +363,7 @@ struct BackgroundConfigRefresh {
 
         // ── Domain verification ───────────────────────────────────────────────
         let hostname    = parsedURL.host ?? ""
-        let domainSha   = sha256Hex(hostname)
+        let domainSha   = sha256HexString(hostname)
         let verified    = await verifyDomain(hostname: hostname)
         if !verified {
             NSLog("[CONFIG_LOAD] 方式=DOMAIN_UNVERIFIED, 域名SHA256=%@, 加速备用已禁用", domainSha)
@@ -540,7 +536,7 @@ struct BackgroundConfigRefresh {
     ///      branch is strictly a recovery path.
     private static func verifyDomain(hostname: String) async -> Bool {
         let candidates = hostnameSuffixCandidates(hostname)
-        let hashed     = candidates.map { sha256Hex($0) }
+        let hashed     = candidates.map { sha256HexString($0) }
         let hashedSet  = Set(hashed)
 
         // Source 1 — JS-pushed cache.
@@ -578,17 +574,12 @@ struct BackgroundConfigRefresh {
         }
     }
 
-    // MARK: - SHA256 + accelerated URL helpers
-
-    private static func sha256Hex(_ string: String) -> String {
-        let digest = SHA256.hash(data: Data(string.utf8))
-        return digest.map { String(format: "%02x", $0) }.joined()
-    }
+    // MARK: - Accelerated URL helper
 
     /// Build the accelerated variant: <accelerateBase>/<sha256(host)><path+query>
     private static func buildAcceleratedURL(from original: URL, accelerateBase: String) -> URL? {
         guard let host = original.host else { return nil }
-        let hashHex     = sha256Hex(host)
+        let hashHex     = sha256HexString(host)
         let path        = original.path.isEmpty ? "/" : original.path
         let queryPart   = original.query.map { "?" + $0 } ?? ""
         return URL(string: "\(accelerateBase)/\(hashHex)\(path)\(queryPart)")

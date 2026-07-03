@@ -34,14 +34,21 @@ private enum ConfigFetcherError: Error, LocalizedError {
     }
 }
 
+// MARK: - Shared SHA256 hex
+
+/// Lowercase hex of SHA256(string). Single source for the domain routing key
+/// (BackgroundConfigRefresh) and the short host digest used in logs below.
+func sha256HexString(_ string: String) -> String {
+    SHA256.hash(data: Data(string.utf8)).map { String(format: "%02x", $0) }.joined()
+}
+
 // MARK: - ConfigFetcher
 
 struct ConfigFetcher {
 
     /// Short host digest for logs — the hostname is user profile data.
     private static func hostHash8(_ host: String) -> String {
-        let digest = SHA256.hash(data: Data(host.utf8))
-        return digest.map { String(format: "%02x", $0) }.joined().prefix(8).description
+        String(sha256HexString(host).prefix(8))
     }
 
     // MARK: - Public API

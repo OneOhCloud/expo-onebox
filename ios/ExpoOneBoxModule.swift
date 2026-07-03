@@ -138,8 +138,27 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
             await self.stopVPN()
         }
 
-        AsyncFunction("getExtensionLogs") { () -> String in
-            return self.readExtensionLogs()
+        // Android-only bridge methods, stubbed on iOS for 4-layer signature
+        // parity (docs/claude/bridge-signature.md). Every JS call site guards
+        // with `Platform.OS === 'android'`, so these are never reached on iOS;
+        // the stubs exist only so the signature matches across all four layers.
+        Function("checkBatteryOptimizationExemption") { () -> Bool in
+            // iOS has no battery-optimization allowlist; report "exempt".
+            return true
+        }
+
+        AsyncFunction("requestBatteryOptimizationExemption") { () async -> Bool in
+            return true
+        }
+
+        Function("crashForBugsnagTest") { () -> Bool in
+            // No-op on iOS (Android-only diagnostic); never called here.
+            return false
+        }
+
+        Function("repairSQLiteDirectory") { () -> Bool in
+            // SQLite directory repair is an Android storage-path concern; no-op on iOS.
+            return true
         }
 
         // Returns the last startup error written by the Network Extension to the shared
@@ -556,19 +575,19 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
             isStartingUp = false
             updateStatus(0)
         case .disconnected:
-            // 关键：使用 isStartingUp 标记而非 currentStatus==1 来判断启动失败。
-            // 因为 NEVPNStatus 可能经过 connecting→disconnecting→disconnected，
-            // 到达 disconnected 时 currentStatus 已经是 3(disconnecting) 而非 1(starting)。
+            // Detect startup failure via the isStartingUp flag, not currentStatus==1:
+            // NEVPNStatus can pass through connecting→disconnecting→disconnected, so by the
+            // time it reaches disconnected currentStatus is already 3 (disconnecting), not 1.
             let wasStarting = self.isStartingUp
             NSLog("[ExpoOneBox] VPN status: disconnected, wasStarting=\(wasStarting), currentStatus=\(currentStatus)")
             isStartingUp = false
             trafficMonitor?.disconnect()
             trafficMonitor = nil
             updateStatus(0)
-            // 主动检测启动失败：从共享文件读取错误并推送给 JS。
+            // Actively detect startup failure: read the error from the shared file and push it to JS.
             if wasStarting {
                 NSLog("[ExpoOneBox] Startup failure path entered, scheduling error check...")
-                // 延迟 500ms 确保 Extension 进程的文件写入已刷盘
+                // Delay 500ms so the extension process's file write has flushed to disk.
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
                     guard let self else {
                         NSLog("[ExpoOneBox] self was deallocated before error check")
@@ -640,29 +659,6 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
         return content.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    // MARK: - Extension Logs
-
-    /// 读取扩展的 stderr.log 文件
-    private func readExtensionLogs() -> String {
-        // NOTE (D3b-25): this returns in-band "Error: …" strings mixed into the
-        // normal log data stream instead of throwing. Left as-is per audit scope;
-        // getExtensionLogs is a JS-unreachable orphan (D5-07) pending TS wiring.
-        guard let cacheDir = appGroupCachesURL() else {
-            return "Error: Cannot access app group container"
-        }
-        let logPath = cacheDir.appendingPathComponent("stderr.log")
-
-        do {
-            let content = try String(contentsOf: logPath, encoding: .utf8)
-            // 返回最后 50 行
-            let lines = content.components(separatedBy: "\n")
-            let lastLines = lines.suffix(50).joined(separator: "\n")
-            return lastLines
-        } catch {
-            return "Error reading extension logs: \(error.localizedDescription)\nLog path: \(logPath.path)"
-        }
-    }
-
     // MARK: - Cleanup
 
     private func cleanup() {
@@ -724,9 +720,17 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
     /// the user can distinguish "the JS–native bridge is alive" from
     /// "the core is running."
     internal func sendNativeLog(level: String, tag: String, message: String) {
+        // Clamp to the level union the JS `onNativeLog` payload declares
+        // ('info' | 'warn' | 'error'), mirroring the Kotlin side (D2-16).
+        let normalizedLevel: String
+        switch level.lowercased() {
+        case "warn", "warning": normalizedLevel = "warn"
+        case "error", "err", "fatal", "panic": normalizedLevel = "error"
+        default: normalizedLevel = "info"
+        }
         NSLog("[ExpoOneBox/%@] %@", tag, message)
         sendEvent("onNativeLog", [
-            "level": level,
+            "level": normalizedLevel,
             "tag": tag,
             "message": message,
         ])

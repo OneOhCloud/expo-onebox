@@ -100,10 +100,15 @@ class BackgroundConfigWorker(
         }
 
         fun storeResult(context: Context, result: ConfigRefreshResult) {
-            context.getSharedPreferences(BG_PREFS_NAME, Context.MODE_PRIVATE)
-                .edit()
-                .putString("last_result", gson.toJson(result))
-                .apply()
+            // Lock on the same monitor as ExpoOneBoxModule.getLastConfigRefreshResult
+            // so a write can't slip between that reader's load and clear and be
+            // silently dropped.
+            synchronized(BackgroundConfigWorker::class.java) {
+                context.getSharedPreferences(BG_PREFS_NAME, Context.MODE_PRIVATE)
+                    .edit()
+                    .putString("last_result", gson.toJson(result))
+                    .apply()
+            }
         }
 
         fun loadLastResult(context: Context): Map<String, Any?>? {
