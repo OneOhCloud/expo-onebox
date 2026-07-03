@@ -594,8 +594,12 @@ struct BackgroundConfigRefresh {
         sharedDefaults?.removeObject(forKey: kLastResultJSON)
     }
 
-    static func isRegistered() -> Bool {
-        return sharedDefaults?.bool(forKey: kIsRegistered) ?? false
+    // Query BGTaskScheduler for the authoritative pending-request state rather
+    // than the kIsRegistered intent flag, which can stay true after the system
+    // drops the request (audit C13).
+    static func isRegistered() async -> Bool {
+        let requests = await BGTaskScheduler.shared.pendingTaskRequests()
+        return requests.contains { $0.identifier == taskIdentifier }
     }
 
     // The `subscription-userinfo` header parser now lives in the shared pure

@@ -279,7 +279,7 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
 
         // Whether a background refresh task is currently scheduled.
         AsyncFunction("isBackgroundConfigRefreshRegistered") { () async -> Bool in
-            BackgroundConfigRefresh.isRegistered()
+            await BackgroundConfigRefresh.isRegistered()
         }
 
         // Copies the bundled asset (sourceUri = file:// URI) into the AppGroup Caches dir as tun.db.
