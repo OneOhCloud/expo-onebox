@@ -2,12 +2,24 @@ import ExpoModulesCore
 @preconcurrency import Libbox
 @preconcurrency import NetworkExtension
 
-// NOTE (D4-10): `@unchecked Sendable` suppresses the compiler's data-race
-// checking but the races are real — `isStartingUp`, `currentStatus`,
-// `coreLogLevelMax`, `trafficMonitor` and `vpnManager` are read/written across
-// the Expo async executor, the main queue (NEVPNStatus observer) and background
-// dispatch queues with no lock. A proper fix (actor isolation or a serial queue)
-// needs a build to verify and is out of scope for this surgical pass.
+/// Serializes access to a field shared across the Expo async executor, the main
+/// queue (NEVPNStatus observer) and background dispatch queues. Every get/set
+/// takes the lock and never nests another guarded access, so there is no deadlock
+/// (audit D4-10). Runtime behaviour needs a real iOS device to fully verify —
+/// Network Extension VPN does not run in the simulator.
+@propertyWrapper
+final class Guarded<T>: @unchecked Sendable {
+    private var value: T
+    private let lock = NSLock()
+    init(wrappedValue: T) { value = wrappedValue }
+    var wrappedValue: T {
+        get { lock.lock(); defer { lock.unlock() }; return value }
+        set { lock.lock(); defer { lock.unlock() }; value = newValue }
+    }
+}
+
+// The mutable fields previously flagged as data races (D4-10) are now @Guarded;
+// @unchecked Sendable remains because the class still crosses concurrency domains.
 public class ExpoOneBoxModule: Module, @unchecked Sendable {
 
     // Extension bundle identifier — must match the NE target's PRODUCT_BUNDLE_IDENTIFIER
@@ -15,13 +27,13 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
     // App Group identifier — shared between app and extension
     private static let appGroupID = "group.cloud.oneoh.networktools"
 
-    private var vpnManager: NETunnelProviderManager?
-    private var trafficMonitor: TrafficMonitor?
-    private var currentStatus: Int = 0 // 0=Stopped, 1=Starting, 2=Started, 3=Stopping
+    @Guarded private var vpnManager: NETunnelProviderManager?
+    @Guarded private var trafficMonitor: TrafficMonitor?
+    @Guarded private var currentStatus: Int = 0 // 0=Stopped, 1=Starting, 2=Started, 3=Stopping
     /// Tracks whether VPN is in the process of starting up.
     /// Set to true when user initiates start, cleared on connected or disconnected.
     /// Used to detect startup failures even when NEVPNStatus goes connecting→disconnecting→disconnected.
-    private var isStartingUp: Bool = false
+    @Guarded private var isStartingUp: Bool = false
     private var lastStartConfig: String = ""
     private var isInitialized = false
     private var statusObserver: NSObjectProtocol?
@@ -30,7 +42,7 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
     /// `log/level.go` in the vendored sing-box tree: panic=0, fatal=1,
     /// error=2, warn=3, info=4, debug=5, trace=6. Entries with
     /// `level > coreLogLevelMax` are dropped before `sendLog(...)`.
-    internal var coreLogLevelMax: Int32 = 4 // info
+    @Guarded internal var coreLogLevelMax: Int32 = 4 // info
 
     public func definition() -> ModuleDefinition {
         Name("ExpoOneBox")

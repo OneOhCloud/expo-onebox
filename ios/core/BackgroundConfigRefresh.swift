@@ -327,12 +327,11 @@ struct BackgroundConfigRefresh {
             throw ExpoOneBoxError.primaryFailed(primaryError)
         }
 
-        // NOTE: iOS emits FALLBACK_ACCELERATOR here — i.e. when the accelerated
-        // fetch is *about to be attempted* — whereas Android emits the same token
-        // only after the fallback *succeeds* (see config-fetch-policy.md token
-        // table). Aligning the emit timing (or documenting it per-token in that
-        // doc) is a coordinator follow-up; the token value is left unchanged.
-        NSLog("[CONFIG_LOAD] 方式=FALLBACK_ACCELERATOR, 原因=%@, 加速URL=%@", primaryError, summarizeAccelerateUrl(accURL.absoluteString))
+        // The attempt uses a distinct FALLBACK_TRY token; FALLBACK_ACCELERATOR is
+        // reserved for the successful result (with traffic fields), matching Android
+        // (audit D3c-13). The foreground path returns the raw result, so it logs
+        // only the attempt.
+        NSLog("[CONFIG_LOAD] 方式=FALLBACK_TRY, 原因=%@, 加速URL=%@", primaryError, summarizeAccelerateUrl(accURL.absoluteString))
         do {
             return try await ConfigFetcher.fetch(url: accURL, userAgent: userAgent)
         } catch {
@@ -442,11 +441,10 @@ struct BackgroundConfigRefresh {
         }
 
         // NOTE: iOS emits FALLBACK_ACCELERATOR here — when the accelerated fetch
-        // is *about to be attempted* — whereas Android emits the same token only
-        // after the fallback *succeeds* (see config-fetch-policy.md token table).
-        // Aligning the emit timing (or documenting it per-token) is a coordinator
-        // follow-up; the token value is left unchanged.
-        NSLog("[CONFIG_LOAD] 方式=FALLBACK_ACCELERATOR, 原因=%@, 加速URL=%@", primaryError, summarizeAccelerateUrl(accURL.absoluteString))
+        // Distinct FALLBACK_TRY token for the attempt; the FALLBACK_ACCELERATOR
+        // token below is the successful result (with traffic fields), matching
+        // Android's single emit (audit D3c-13).
+        NSLog("[CONFIG_LOAD] 方式=FALLBACK_TRY, 原因=%@, 加速URL=%@", primaryError, summarizeAccelerateUrl(accURL.absoluteString))
 
         // ── Try accelerated URL ───────────────────────────────────────────
         do {
