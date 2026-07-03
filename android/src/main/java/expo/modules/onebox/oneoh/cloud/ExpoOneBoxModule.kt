@@ -632,7 +632,8 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
                     if (file.exists()) file.readText().trim().removePrefix("[binary] ") else ""
                 } catch (_: Exception) { "" }
 
-                val message = errMsg.ifEmpty { "启动异常退出，请检查配置文件。" }
+                // Language-neutral token; the JS layer localizes it (audit C9).
+                val message = errMsg.ifEmpty { "START_FAILED_GENERIC" }
                 Log.e(TAG, "Startup failure detected: $message")
                 sendEvent("onError", mapOf(
                     "type" to "StartServiceFailed",
@@ -677,12 +678,13 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
 
             // 检测是否为规则集下载失败
             if (type == Alert.CreateService && rawMessage.contains("initialize rule-set")) {
+                // Language-neutral tokens; the JS layer localizes them (audit C9).
                 if (rawMessage.contains("connection reset by peer")) {
-                    cleanMessage = "规则集下载失败：网络连接被重置。请检查网络连接后重试。"
+                    cleanMessage = "RULESET_DOWNLOAD_RESET"
                 } else if (rawMessage.contains("Application error 0x0")) {
-                    cleanMessage = "规则集下载失败：无法连接到规则集服务器。请检查网络连接后重试。"
+                    cleanMessage = "RULESET_DOWNLOAD_UNREACHABLE"
                 } else if (rawMessage.contains("timeout") || rawMessage.contains("timed out")) {
-                    cleanMessage = "规则集下载超时。请检查网络连接后重试。"
+                    cleanMessage = "RULESET_DOWNLOAD_TIMEOUT"
                 }
             }
 
