@@ -1,0 +1,15 @@
+{
+  "_doc": "Cross-platform decision table for the fetch → accelerator-fallback policy (audit C4 / D3c-01). This is the language-agnostic spec the four imperative fetchers (Kotlin fetchProfileConfigWithFallback + executeRefreshWith, Swift equivalents) implement inline. The JS reference shouldFallbackToAccelerator (src/utils/config-fetch-policy.ts) is asserted against this file by config-fetch-policy.test.ts; a native decision predicate extracted from the state machines must match the same table. Inputs: kind (the primary-request error kind, 'ok' = the primary succeeded), domainVerified, acceleratorConfigured. Rules: HTTP errors and cancellations never fall back; a network fault falls back only when the domain is verified AND an accelerator is configured.",
+  "cases": [
+    { "kind": "http",      "domainVerified": true,  "acceleratorConfigured": true,  "fallback": false, "reason": "http-no-fallback" },
+    { "kind": "http",      "domainVerified": true,  "acceleratorConfigured": false, "fallback": false, "reason": "http-no-fallback" },
+    { "kind": "cancelled", "domainVerified": true,  "acceleratorConfigured": true,  "fallback": false, "reason": "cancelled" },
+    { "kind": "timeout",   "domainVerified": false, "acceleratorConfigured": true,  "fallback": false, "reason": "unverified-domain" },
+    { "kind": "dns",       "domainVerified": false, "acceleratorConfigured": true,  "fallback": false, "reason": "unverified-domain" },
+    { "kind": "network",   "domainVerified": true,  "acceleratorConfigured": false, "fallback": false, "reason": "accelerator-unavailable" },
+    { "kind": "tls",       "domainVerified": true,  "acceleratorConfigured": true,  "fallback": true,  "reason": "network-fault" },
+    { "kind": "timeout",   "domainVerified": true,  "acceleratorConfigured": true,  "fallback": true,  "reason": "network-fault" },
+    { "kind": "network",   "domainVerified": true,  "acceleratorConfigured": true,  "fallback": true,  "reason": "network-fault" },
+    { "kind": "unknown",   "domainVerified": true,  "acceleratorConfigured": true,  "fallback": true,  "reason": "network-fault" }
+  ]
+}
