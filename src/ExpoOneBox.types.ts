@@ -1,6 +1,3 @@
-import type { StyleProp, ViewStyle } from 'react-native';
-
-
 // VPN 连接状态
 export type VpnStatus = 'stopped' | 'connecting' | 'connected' | 'disconnecting' | 'unknown';
 
@@ -73,10 +70,6 @@ export type GroupUpdateEventPayload = {
   autoNow?: string;
 };
 
-export type OnLoadEventPayload = {
-  url: string;
-};
-
 export interface ConfigFetchResult {
   statusCode: number;
   headers: Record<string, string>;
@@ -100,14 +93,14 @@ export interface BackgroundRefreshOptions {
 export interface ConfigRefreshResult {
   status: 'success' | 'failed' | 'skipped';
   content?: string;
-  subscriptionUpload: number;
-  subscriptionDownload: number;
-  subscriptionTotal: number;
-  subscriptionExpire: number;
+  profileUpload: number;
+  profileDownload: number;
+  profileTotal: number;
+  profileExpire: number;
   error?: string;
   timestamp: string;
   durationMs: number;
-  subscriptionUserinfoHeader?: string;
+  profileUserinfoHeader?: string;
   method?: 'primary' | 'fallback';
   actualUrl?: string;  // 加速回落时为构造后的完整 URL
 }
@@ -131,17 +124,5 @@ export type ExpoOneBoxModuleEvents = {
   onLog: (params: LogEventPayload) => void;
   onTrafficUpdate: (params: TrafficUpdateEventPayload) => void;
   onGroupUpdate: (params: GroupUpdateEventPayload) => void;
-  onChange: (params: ChangeEventPayload) => void;
-  onConfigRefreshResult: (params: ConfigRefreshResult) => void;
   onNativeLog: (params: NativeLogEventPayload) => void;
-};
-
-export type ChangeEventPayload = {
-  value: string;
-};
-
-export type ExpoOneBoxViewProps = {
-  url: string;
-  onLoad: (event: { nativeEvent: OnLoadEventPayload }) => void;
-  style?: StyleProp<ViewStyle>;
 };

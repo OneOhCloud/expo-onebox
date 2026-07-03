@@ -100,6 +100,13 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         try? "".write(to: url, atomically: true, encoding: .utf8)
     }
 
+    /// Persist a startup failure to the shared file (so the main app can read it) and
+    /// return the matching error for the caller to `throw`.
+    private func failStartup(_ message: String) -> ExtensionStartupError {
+        PacketTunnelProvider.writeStartupError(message)
+        return ExtensionStartupError(message)
+    }
+
     override func startTunnel(options startOptions: [String: NSObject]?) async throws {
         let basePath = FilePath.sharedDirectory.relativePath
         let workingPath = FilePath.workingDirectory.relativePath
@@ -122,14 +129,12 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
             effectiveOptions = try resolveStartOptions(startOptions)
         } catch {
             let msg = "(packet-tunnel) error: resolve start options: \(error.localizedDescription)"
-            PacketTunnelProvider.writeStartupError(msg)
-            throw ExtensionStartupError(msg)
+            throw failStartup(msg)
         }
         if effectiveOptions["configContent"] == nil {
             let msg = "(packet-tunnel) error: missing configContent in tunnel options"
             logger.error("missing configContent")
-            PacketTunnelProvider.writeStartupError(msg)
-            throw ExtensionStartupError(msg)
+            throw failStartup(msg)
         }
         let configLen = (effectiveOptions["configContent"] as? String)?.count ?? 0
         logger.log("Config content length: \(configLen)")
@@ -140,8 +145,7 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         } catch {
             let msg = "(packet-tunnel) error: persist start options: \(error.localizedDescription)"
             logger.error("persist start options: \(error.localizedDescription)")
-            PacketTunnelProvider.writeStartupError(msg)
-            throw ExtensionStartupError(msg)
+            throw failStartup(msg)
         }
 
         applyStartOptions(effectiveOptions)
@@ -157,8 +161,7 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         if let setupError {
             let msg = "(packet-tunnel) error: setup service: \(setupError.localizedDescription)"
             logger.error("setup service: \(setupError.localizedDescription)")
-            PacketTunnelProvider.writeStartupError(msg)
-            throw ExtensionStartupError(msg)
+            throw failStartup(msg)
         }
         logger.log("Libbox setup completed")
 
@@ -168,23 +171,19 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         if let stderrError {
             let msg = "(packet-tunnel) redirect stderr error: \(stderrError.localizedDescription)"
             logger.error("redirect stderr: \(stderrError.localizedDescription)")
-            PacketTunnelProvider.writeStartupError(msg)
-            throw ExtensionStartupError(msg)
+            throw failStartup(msg)
         }
         logger.log("Stderr redirected to: \(stderrPath)")
 
-        // let ignoreMemoryLimit = (effectiveOptions["ignoreMemoryLimit"] as? NSNumber)?.boolValue ?? false
-        // 强制不忽略内存限制，确保在内存紧张时系统能正确回收资源，避免被杀死后无法清理的情况 
-        let ignoreMemoryLimit = false
-        LibboxSetMemoryLimit(!ignoreMemoryLimit)
+        // 强制启用内存限制，确保在内存紧张时系统能正确回收资源，避免被杀死后无法清理的情况
+        LibboxSetMemoryLimit(true)
 
         var error: NSError?
         commandServer = LibboxNewCommandServer(platformInterface, platformInterface, &error)
         if let error {
             let msg = "(packet-tunnel): create command server error: \(error.localizedDescription)"
             logger.error("create command server: \(error.localizedDescription)")
-            PacketTunnelProvider.writeStartupError(msg)
-            throw ExtensionStartupError(msg)
+            throw failStartup(msg)
         }
         logger.log("Command server created")
 
@@ -194,8 +193,7 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         } catch {
             let msg = "(packet-tunnel): start command server error: \(error.localizedDescription)"
             logger.error("start command server: \(error.localizedDescription)")
-            PacketTunnelProvider.writeStartupError(msg)
-            throw ExtensionStartupError(msg)
+            throw failStartup(msg)
         }
 
         writeMessage("(packet-tunnel): Here I stand")
@@ -209,9 +207,13 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         }
     }
 
+    /// libbox log-level code for command-server messages (matches sing-box `log.Level`:
+    /// panic=0, fatal=1, error=2 — see ExpoOneBoxModule.setCoreLogLevel).
+    private static let libboxLogLevelError: Int32 = 2
+
     func writeMessage(_ message: String) {
         if let commandServer {
-            commandServer.writeMessage(2, message: message)
+            commandServer.writeMessage(PacketTunnelProvider.libboxLogLevelError, message: message)
         }
     }
 
@@ -230,10 +232,9 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
             PacketTunnelProvider.clearStartupError()
         } catch {
             let msg = "(packet-tunnel) error: start service: \(error.localizedDescription)"
-            // Write to shared App Group file — main app reads this via getStartError()
-            PacketTunnelProvider.writeStartupError(msg)
             logger.error("startOrReloadService failed: \(error.localizedDescription)")
-            throw ExtensionStartupError(msg)
+            // failStartup writes to the shared App Group file — main app reads it via getStartError()
+            throw failStartup(msg)
         }
     }
 
@@ -262,18 +263,6 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
             try? await Task.sleep(nanoseconds: 100 * NSEC_PER_MSEC)
             server.close()
             commandServer = nil
-        }
-    }
-
-    override func handleAppMessage(_ messageData: Data) async -> Data? {
-        do {
-            let options = try ExtensionStartOptions.decode(messageData)
-            applyStartOptions(options)
-            try persistStartOptions(options)
-            try await reloadService()
-            return nil
-        } catch {
-            return error.localizedDescription.data(using: .utf8)
         }
     }
 

@@ -22,15 +22,5 @@
             </intent-filter>
             <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="VPN" />
         </service>
-
-        <service
-            android:name=".core.ProxyService"
-            android:exported="false"
-            android:foregroundServiceType="specialUse">
-            <intent-filter>
-                <action android:name="expo.modules.onebox.oneoh.cloud.SERVICE" />
-            </intent-filter>
-            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="proxy" />
-        </service>
     </application>
 </manifest>

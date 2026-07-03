@@ -29,28 +29,28 @@ private val gson = Gson()
 data class ConfigRefreshResult(
     val status: String,           // "success" | "failed" | "skipped"
     val content: String? = null,
-    val subscriptionUpload: Long = 0,
-    val subscriptionDownload: Long = 0,
-    val subscriptionTotal: Long = 0,
-    val subscriptionExpire: Long = 0,
+    val profileUpload: Long = 0,
+    val profileDownload: Long = 0,
+    val profileTotal: Long = 0,
+    val profileExpire: Long = 0,
     val error: String? = null,
     val timestamp: String,
     val durationMs: Long,
-    val subscriptionUserinfoHeader: String? = null,
+    val profileUserinfoHeader: String? = null,
     val method: String? = null,   // "primary" | "fallback"
     val actualUrl: String? = null, // 实际请求的 URL（加速时为构造后的完整 URL）
 ) {
     fun toMap(): Map<String, Any?> = buildMap {
         put("status", status)
-        put("subscriptionUpload", subscriptionUpload)
-        put("subscriptionDownload", subscriptionDownload)
-        put("subscriptionTotal", subscriptionTotal)
-        put("subscriptionExpire", subscriptionExpire)
+        put("profileUpload", profileUpload)
+        put("profileDownload", profileDownload)
+        put("profileTotal", profileTotal)
+        put("profileExpire", profileExpire)
         put("timestamp", timestamp)
         put("durationMs", durationMs)
         content?.let { put("content", it) }
         error?.let { put("error", it) }
-        subscriptionUserinfoHeader?.let { put("subscriptionUserinfoHeader", it) }
+        profileUserinfoHeader?.let { put("profileUserinfoHeader", it) }
         method?.let { put("method", it) }
         actualUrl?.let { put("actualUrl", it) }
     }
@@ -200,8 +200,25 @@ class BackgroundConfigWorker(
 
         val result = executeRefreshWith(applicationContext, url, userAgent)
         storeResult(applicationContext, result)
-        return if (result.status == "success") Result.success() else Result.retry()
+        return when {
+            result.status == "success" -> Result.success()
+            // A permanent HTTP 4xx (e.g. 403 revoked config URL) will never
+            // recover; letting WorkManager exponential-backoff retry it loops
+            // forever and wastes wakeups + traffic. Network errors and 5xx retry.
+            isNonRetryableHttpError(result) -> Result.failure()
+            else -> Result.retry()
+        }
     }
+}
+
+/**
+ * True when [result] failed with a primary HTTP 4xx status, which is permanent
+ * and must not be retried by WorkManager. Fallback both-failed errors (which
+ * begin with a transient primary network error) stay retryable.
+ */
+private fun isNonRetryableHttpError(result: ConfigRefreshResult): Boolean {
+    val error = result.error ?: return false
+    return Regex("^HTTP 4\\d\\d$").matches(error)
 }
 
 // MARK: - Domain verification
@@ -313,10 +330,46 @@ private fun readAccelerateUrl(context: Context): String? {
         ?.takeIf { it.isNotEmpty() }
 }
 
-// MARK: - Shared fetch executor (foreground native fetchSubscription)
+// MARK: - Fallback preflight (shared by both fetch executors)
+
+private data class FallbackPreflight(
+    val host: String,
+    val domainSha: String,
+    val verified: Boolean,
+    val testPrimaryUnavailable: Boolean,
+    val accelerateUrl: String?,
+)
 
 /**
- * Native fetchSubscription path with optional accelerator fallback.
+ * Shared preamble for [fetchProfileConfigWithFallback] and [executeRefreshWith]:
+ * resolve the host, verify the domain, and read the JS-pushed test/accelerate
+ * switches. Behaviour is identical for both callers; [logLabel] only tags the
+ * diagnostic line so the two call sites stay distinguishable in logcat.
+ */
+private suspend fun prepareFallbackPreflight(
+    context: Context,
+    url: String,
+    logLabel: String,
+): FallbackPreflight {
+    val host      = android.net.Uri.parse(url).host ?: ""
+    val domainSha = sha256Hex(host)
+    val verified  = verifyDomain(host, context)
+    if (!verified) {
+        Log.w(TAG, "[CONFIG_LOAD] 方式=DOMAIN_UNVERIFIED, 域名SHA256=$domainSha, 加速备用已禁用")
+    }
+    val testPrimaryUnavailable = isTestPrimaryUrlUnavailableEnabled(context)
+    val accelerateUrl = readAccelerateUrl(context)
+    Log.i(
+        TAG,
+        "[CONFIG_LOAD] 请求前开关状态($logLabel): testPrimaryUnavailable=$testPrimaryUnavailable, accelerate=${summarizeAccelerateUrl(accelerateUrl)}",
+    )
+    return FallbackPreflight(host, domainSha, verified, testPrimaryUnavailable, accelerateUrl)
+}
+
+// MARK: - Shared fetch executor (foreground native fetchProfileConfig)
+
+/**
+ * Native fetchProfileConfig path with optional accelerator fallback.
  *
  * Rules match executeRefreshWith:
  *   1. Try primary URL first
@@ -328,23 +381,15 @@ private fun readAccelerateUrl(context: Context): String? {
  *
  * Cancellation is rethrown — it must never trigger accelerator fallback.
  */
-internal suspend fun fetchSubscriptionWithFallback(
+internal suspend fun fetchProfileConfigWithFallback(
     context: Context,
     url: String,
     userAgent: String,
 ): ConfigFetchResult {
-    val host      = android.net.Uri.parse(url).host ?: ""
-    val domainSha = sha256Hex(host)
-    val verified  = verifyDomain(host, context)
-    if (!verified) {
-        Log.w(TAG, "[CONFIG_LOAD] 方式=DOMAIN_UNVERIFIED, 域名SHA256=$domainSha, 加速备用已禁用")
-    }
-    val testPrimaryUnavailable = isTestPrimaryUrlUnavailableEnabled(context)
-    val accelerateUrl = readAccelerateUrl(context)
-    Log.i(
-        TAG,
-        "[CONFIG_LOAD] 请求前开关状态(fetchSubscription): testPrimaryUnavailable=$testPrimaryUnavailable, accelerate=${summarizeAccelerateUrl(accelerateUrl)}",
-    )
+    val preflight = prepareFallbackPreflight(context, url, "fetchProfileConfig")
+    val verified               = preflight.verified
+    val testPrimaryUnavailable = preflight.testPrimaryUnavailable
+    val accelerateUrl          = preflight.accelerateUrl
 
     val primaryError: String = try {
         if (testPrimaryUnavailable) {
@@ -352,8 +397,7 @@ internal suspend fun fetchSubscriptionWithFallback(
             throwPrimaryUnavailableForTest()
         }
         val primary = fetchConfig(url, userAgent)
-        // HTTP errors do not trigger fallback.
-        if (primary.statusCode !in 200..299) return primary
+        // HTTP errors (non-2xx) do not trigger fallback — return the response as-is.
         return primary
     } catch (ce: CancellationException) {
         throw ce
@@ -403,18 +447,11 @@ internal suspend fun executeRefreshWith(
     val timestamp = Instant.now().toString()
 
     // ── Domain verification ───────────────────────────────────────────────────
-    val host      = android.net.Uri.parse(url).host ?: ""
-    val domainSha = sha256Hex(host)
-    val verified  = verifyDomain(host, context)
-    if (!verified) {
-        Log.w(TAG, "[CONFIG_LOAD] 方式=DOMAIN_UNVERIFIED, 域名SHA256=$domainSha, 加速备用已禁用")
-    }
-    val testPrimaryUnavailable = isTestPrimaryUrlUnavailableEnabled(context)
-    val accelerateUrl = readAccelerateUrl(context)
-    Log.i(
-        TAG,
-        "[CONFIG_LOAD] 请求前开关状态(executeRefresh): testPrimaryUnavailable=$testPrimaryUnavailable, accelerate=${summarizeAccelerateUrl(accelerateUrl)}",
-    )
+    val preflight = prepareFallbackPreflight(context, url, "executeRefresh")
+    val domainSha              = preflight.domainSha
+    val verified               = preflight.verified
+    val testPrimaryUnavailable = preflight.testPrimaryUnavailable
+    val accelerateUrl          = preflight.accelerateUrl
 
     // ── Try primary URL first ────────────────────────────────────────────────
     val primaryError: String = try {
@@ -443,13 +480,13 @@ internal suspend fun executeRefreshWith(
         return ConfigRefreshResult(
             status             = "success",
             content            = fetchResult.body,
-            subscriptionUpload   = info.upload,
-            subscriptionDownload = info.download,
-            subscriptionTotal    = info.total,
-            subscriptionExpire   = info.expire,
+            profileUpload   = info.upload,
+            profileDownload = info.download,
+            profileTotal    = info.total,
+            profileExpire   = info.expire,
             timestamp          = timestamp,
             durationMs         = durationMs,
-            subscriptionUserinfoHeader = headerValue,
+            profileUserinfoHeader = headerValue,
             method             = "primary",
         )
     } catch (ce: CancellationException) {
@@ -511,13 +548,13 @@ internal suspend fun executeRefreshWith(
             ConfigRefreshResult(
                 status             = "success",
                 content            = fetchResult.body,
-                subscriptionUpload   = info.upload,
-                subscriptionDownload = info.download,
-                subscriptionTotal    = info.total,
-                subscriptionExpire   = info.expire,
+                profileUpload   = info.upload,
+                profileDownload = info.download,
+                profileTotal    = info.total,
+                profileExpire   = info.expire,
                 timestamp          = timestamp,
                 durationMs         = durationMs,
-                subscriptionUserinfoHeader = headerValue,
+                profileUserinfoHeader = headerValue,
                 method             = "fallback",
                 actualUrl          = accUrl,
             )
@@ -548,6 +585,9 @@ internal data class TrafficInfo(
     val expire: Long,
 )
 
+// C6: one of 4 platform copies of this parser (Android + iOS + JS + web stub).
+// Overflow behaviour is not yet unified — pending the coordinator's golden-sample
+// lock. Keep this impl unchanged until then.
 internal fun parseUserinfo(header: String?): TrafficInfo {
     fun extract(key: String): Long {
         val match = Regex("$key=(\\d+)").find(header ?: "") ?: return 0L

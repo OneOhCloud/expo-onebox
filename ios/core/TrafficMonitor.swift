@@ -77,16 +77,6 @@ class TrafficMonitor: NSObject {
         module?.sendGroupUpdate(all: all, now: now, autoNow: autoNow)
     }
 
-    private func logLevelName(_ level: Int32) -> String {
-        switch level {
-        case 2: return "ERROR"
-        case 3: return "WARN"
-        case 4: return "INFO"
-        case 5: return "DEBUG"
-        case 6: return "TRACE"
-        default: return "LOG"
-        }
-    }
 }
 
 // MARK: - LibboxCommandClientHandlerProtocol

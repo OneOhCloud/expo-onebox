@@ -45,15 +45,17 @@ struct DnsTester {
         "9.9.9.9"         // Quad9 DNS
     ]
 
-    /// Launches concurrent tests for all servers and returns the fastest responding one.
-    /// Concurrently tests all servers, waits for every result (each capped at 600 ms by
-    /// SO_RCVTIMEO), then picks the one with the lowest measured latency.
-    /// "First packet to arrive" ≠ lowest latency under concurrent load, so we must
-    /// collect all results before choosing.
+    /// Launches concurrent probes for all servers and returns the first one to respond.
+    ///
+    /// This is a first-response-wins race, not a collect-all-then-pick-lowest-latency
+    /// scan: as soon as any server answers, its result is returned and `cancelAll()`
+    /// tears down the remaining probes. Each probe is bounded by a 500 ms task-level
+    /// timeout racing the query, plus a 450 ms SO_RCVTIMEO on the socket, so a
+    /// non-responding server cannot stall the race. There is no global timeout —
+    /// the per-probe bounds are the only cap (see Android for the ranked-latency variant).
     static func findBest() async -> String {
         let fallback = servers.first ?? "8.8.8.8"
 
-        // Race: 第一个成功返回的 DNS 胜出，立刻取消其余任务
         let best: String? = await withTaskGroup(
             of: (String, TimeInterval)?.self,
             returning: String?.self
@@ -62,11 +64,11 @@ struct DnsTester {
                 group.addTask { await testServer(dns) }
             }
 
-            // 只取第一个非 nil 的结果，随后 group 析构自动取消剩余任务
+            // Take the first non-nil result; cancelling the group tears down the rest.
             for await result in group {
                 if let (dns, latency) = result {
-                    logger.info("✅ First response: \(dns, privacy: .public)  \(String(format: "%.1f", latency * 1000), privacy: .public) ms")
-                    group.cancelAll()   // 显式取消其余子任务
+                    logger.info("First response: \(dns, privacy: .public)  \(String(format: "%.1f", latency * 1000), privacy: .public) ms")
+                    group.cancelAll()
                     return dns
                 }
             }
@@ -90,26 +92,35 @@ struct DnsTester {
                 group.addTask { try await performQuery(to: dnsServer) }
                 group.addTask {
                     try await Task.sleep(nanoseconds: 500_000_000)
-                    throw CancellationError()   // ← 用 CancellationError 语义更清晰
+                    throw CancellationError()   // timeout branch
                 }
 
-                // 第一个完成：若是 query 成功则正常返回；若是 timeout 则抛错
+                // First to finish wins: query success returns normally, timeout throws.
                 try await group.next()!
-                group.cancelAll()   // ← 关键：立刻取消另一个任务
+                group.cancelAll()   // cancel the losing task immediately
             }
 
             let latency = CFAbsoluteTimeGetCurrent() - startTime
-            logger.debug("✓ \(dnsServer) responded, latency: \(String(format: "%.1f", latency * 1000)) ms")
+            logger.debug("\(dnsServer) responded, latency: \(String(format: "%.1f", latency * 1000)) ms")
             return (dnsServer, latency)
 
         } catch {
-            logger.debug("✗ \(dnsServer) failed or timed out")
+            logger.debug("\(dnsServer) failed or timed out")
             return nil
         }
     }
 
     private static func performQuery(to dnsServer: String) async throws {
         logger.debug("Testing DNS server: \(dnsServer, privacy: .public)")
+
+        // NOTE: this inlines a fixed www.baidu.com A-query packet, a copy of the DNS
+        // packet knowledge already implemented in ConfigFetcher.buildAQuery / resolveHostname.
+        // The audit (D3b-05 / D3c-04) recommends replacing this probe with a call to
+        // ConfigFetcher.resolveHostname("www.baidu.com", via: dnsServer). That is deferred
+        // because it changes the probe's success criterion (any matching response ->
+        // must contain an A record), which affects DNS server selection under DNS
+        // poisoning/censorship and needs a build + on-device verification in adversarial
+        // network conditions before it can land.
 
         // DNS query packet for www.baidu.com (type A)
         var queryData = Data([
@@ -131,14 +142,12 @@ struct DnsTester {
         queryData.append(contentsOf: [0x00, 0x01])  // Class IN
 
         return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            var isResumed = false
-            let lock = NSLock()
+            let once = ResumeOnce(continuation)
 
             DispatchQueue.global(qos: .userInitiated).async {
                 let socketFD = socket(AF_INET, SOCK_DGRAM, 0)
                 guard socketFD > 0 else {
-                    lock.lock(); defer { lock.unlock() }
-                    if !isResumed { isResumed = true; continuation.resume(throwing: NSError(domain: "SocketError", code: -1, userInfo: nil)) }
+                    once.resume(throwing: NSError(domain: "SocketError", code: -1, userInfo: nil))
                     return
                 }
                 defer { close(socketFD) }
@@ -152,8 +161,7 @@ struct DnsTester {
                 serverAddr.sin_family = sa_family_t(AF_INET)
                 serverAddr.sin_port = UInt16(53).bigEndian
                 guard inet_pton(AF_INET, dnsServer, &serverAddr.sin_addr) == 1 else {
-                    lock.lock(); defer { lock.unlock() }
-                    if !isResumed { isResumed = true; continuation.resume(throwing: NSError(domain: "InvalidIPAddress", code: -1, userInfo: nil)) }
+                    once.resume(throwing: NSError(domain: "InvalidIPAddress", code: -1, userInfo: nil))
                     return
                 }
 
@@ -165,21 +173,17 @@ struct DnsTester {
                     }
                 }
                 guard sendResult > 0 else {
-                    lock.lock(); defer { lock.unlock() }
-                    if !isResumed { isResumed = true; continuation.resume(throwing: NSError(domain: "SendError", code: -1, userInfo: nil)) }
+                    once.resume(throwing: NSError(domain: "SendError", code: -1, userInfo: nil))
                     return
                 }
 
                 var buffer = [UInt8](repeating: 0, count: 512)
                 let recvResult = recv(socketFD, &buffer, buffer.count, 0)
 
-                lock.lock(); defer { lock.unlock() }
-                guard !isResumed else { return }
-                isResumed = true
                 if recvResult >= 12 && buffer[0] == 0x12 && buffer[1] == 0x34 {
-                    continuation.resume()
+                    once.resume(returning: ())
                 } else {
-                    continuation.resume(throwing: NSError(domain: "InvalidResponse", code: -1, userInfo: nil))
+                    once.resume(throwing: NSError(domain: "InvalidResponse", code: -1, userInfo: nil))
                 }
             }
         }

@@ -69,6 +69,11 @@ class VPNService : VpnService(), PlatformInterfaceWrapper {
         return IpPrefix(InetAddress.getByName(address()), prefix())
     }
 
+    private fun Builder.addTunAddress(address: RoutePrefix, label: String) {
+        Log.d(TAG, "[android] addAddress $label: ${address.address()}/${address.prefix()}")
+        addAddress(address.address(), address.prefix())
+    }
+
     override fun openTun(options: TunOptions): Int {
         Log.d(TAG, "[android] openTun: preparing VPN interface")
         Log.d(TAG, "[android] TunOptions: mtu=${options.mtu}, autoRoute=${options.autoRoute}, strictRoute=${options.strictRoute}")
@@ -93,18 +98,14 @@ class VPNService : VpnService(), PlatformInterfaceWrapper {
             // IPv4 地址
             val inet4Address = options.inet4Address
             while (inet4Address.hasNext()) {
-                val address = inet4Address.next()
-                Log.d(TAG, "[android] addAddress IPv4: ${address.address()}/${address.prefix()}")
-                builder.addAddress(address.address(), address.prefix())
+                builder.addTunAddress(inet4Address.next(), "IPv4")
                 hasInet4 = true
             }
 
             // IPv6 地址
             val inet6Address = options.inet6Address
             while (inet6Address.hasNext()) {
-                val address = inet6Address.next()
-                Log.d(TAG, "[android] addAddress IPv6: ${address.address()}/${address.prefix()}")
-                builder.addAddress(address.address(), address.prefix())
+                builder.addTunAddress(inet6Address.next(), "IPv6")
                 hasInet6 = true
             }
 

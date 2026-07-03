@@ -12,6 +12,7 @@ import kotlinx.coroutines.asExecutor
 import kotlinx.coroutines.runBlocking
 import java.net.InetAddress
 import java.net.UnknownHostException
+import kotlin.coroutines.Continuation
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.coroutines.suspendCoroutine
@@ -23,6 +24,30 @@ import kotlin.coroutines.suspendCoroutine
 object LocalResolver : LocalDNSTransport {
 
     private const val RCODE_NXDOMAIN = 3
+
+    /**
+     * Shared DnsResolver.Callback.onError handling for [exchange] and [lookup]:
+     * an ErrnoException maps to errnoCode + resume; anything else propagates
+     * (guarding against a double-resume race).
+     */
+    @RequiresApi(Build.VERSION_CODES.Q)
+    private fun handleDnsError(
+        error: DnsResolver.DnsException,
+        ctx: ExchangeContext,
+        continuation: Continuation<Unit>,
+    ) {
+        val cause = error.cause
+        if (cause is ErrnoException) {
+            ctx.errnoCode(cause.errno)
+            continuation.resume(Unit)
+            return
+        }
+        try {
+            continuation.resumeWithException(error)
+        } catch (_: IllegalStateException) {
+            // already resumed
+        }
+    }
 
     override fun raw(): Boolean = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
 
@@ -44,18 +69,7 @@ object LocalResolver : LocalDNSTransport {
                     }
 
                     override fun onError(error: DnsResolver.DnsException) {
-                        when (val cause = error.cause) {
-                            is ErrnoException -> {
-                                ctx.errnoCode(cause.errno)
-                                continuation.resume(Unit)
-                                return
-                            }
-                        }
-                        try {
-                            continuation.resumeWithException(error)
-                        } catch (_: IllegalStateException) {
-                            // already resumed
-                        }
+                        handleDnsError(error, ctx, continuation)
                     }
                 }
                 DnsResolver.getInstance().rawQuery(
@@ -92,18 +106,7 @@ object LocalResolver : LocalDNSTransport {
                         }
 
                         override fun onError(error: DnsResolver.DnsException) {
-                            when (val cause = error.cause) {
-                                is ErrnoException -> {
-                                    ctx.errnoCode(cause.errno)
-                                    continuation.resume(Unit)
-                                    return
-                                }
-                            }
-                            try {
-                                continuation.resumeWithException(error)
-                            } catch (_: IllegalStateException) {
-                                // already resumed
-                            }
+                            handleDnsError(error, ctx, continuation)
                         }
                     }
                     val type = when {

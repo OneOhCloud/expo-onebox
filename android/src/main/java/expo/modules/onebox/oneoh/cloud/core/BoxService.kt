@@ -36,7 +36,7 @@ import kotlinx.coroutines.withContext
  * 管理 CommandServer 生命周期、VPN 状态、前台通知、启动/停止流程。
  * 接收已处理的 JSON 配置字符串来启动服务。
  *
- * 不包含：UI、配置文件管理、订阅管理
+ * 不包含：UI、配置文件管理、profile 管理
  */
 class BoxService(
     private val service: Service,
@@ -158,24 +158,24 @@ class BoxService(
     }
 
     /**
-     * 从配置中提取服务器名称
+     * Foreground-notification title. The per-node name is not yet parsed from
+     * the config (the `config` param is the seam for that); until then use the
+     * localized app label so the notification reads sensibly — no hardcoded or
+     * banned-terminology string, and the native side has no JS i18n channel.
      */
     private fun extractServerName(config: String): String {
-        return "VPN 服务器"
-            
+        return service.applicationInfo.loadLabel(service.packageManager).toString()
     }
 
     // ==================== CommandServerHandler ====================
 
+    @OptIn(DelicateCoroutinesApi::class)
     override fun serviceStop() {
-        notification.close()
-        status.postValue(Status.Starting)
-        val pfd = fileDescriptor
-        if (pfd != null) {
-            pfd.close()
-            fileDescriptor = null
-        }
-        closeService()
+        // CommandServer-initiated stop (invoked on a libbox thread). Route to the
+        // standard teardown on the main thread so the state machine actually
+        // reaches Stopped — this previously posted Status.Starting and returned,
+        // leaving the tunnel stuck "connecting" and un-stoppable.
+        GlobalScope.launch(Dispatchers.Main) { stopService() }
     }
 
     override fun serviceReload() {
@@ -223,7 +223,10 @@ class BoxService(
 
     @OptIn(DelicateCoroutinesApi::class)
     internal fun stopService() {
-        if (status.value != Status.Started) return
+        // Allow stopping while STARTING too (not just STARTED): a SERVICE_CLOSE
+        // during startup must be honoured, otherwise the tunnel gets stuck
+        // "connecting" and can only be killed by force-stopping the app (D4-03).
+        if (status.value == Status.Stopped || status.value == Status.Stopping) return
         status.value = Status.Stopping
         if (receiverRegistered) {
             service.unregisterReceiver(receiver)
@@ -238,9 +241,10 @@ class BoxService(
             }
             DefaultNetworkMonitor.onNetworkReset = null
             DefaultNetworkMonitor.stop()
-            closeService()
-            commandServer.apply {
-                close()
+            // commandServer may not be initialised yet if we stop mid-startup.
+            if (::commandServer.isInitialized) {
+                closeService()
+                commandServer.close()
             }
             withContext(Dispatchers.Main) {
                 status.value = Status.Stopped

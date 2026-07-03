@@ -25,6 +25,10 @@ class ExtensionPlatformInterface: NSObject, LibboxPlatformInterfaceProtocol, Lib
         }
     }
 
+    // vendored-pattern: the IPv4 and IPv6 route-assembly blocks below are structurally
+    // mirrored on purpose — they track sing-box-for-apple's ExtensionPlatformInterface so
+    // Libbox upgrades stay a low-diff merge. Do not fold the two halves together; keeping
+    // them line-aligned with upstream matters more than the duplication.
     private func openTun0(_ options: LibboxTunOptionsProtocol?, _ ret0_: UnsafeMutablePointer<Int32>?) async throws {
         guard let options else {
             logger.error("Nil options")

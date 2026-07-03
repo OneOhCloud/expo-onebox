@@ -13,6 +13,8 @@ import io.nekohasekai.libbox.OutboundGroupIterator
 import io.nekohasekai.libbox.StatusMessage
 import io.nekohasekai.libbox.StringIterator
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 fun StringIterator.toList(): List<String> = mutableListOf<String>().apply {
     while (hasNext()) {
@@ -65,8 +67,6 @@ open class CommandClient(
         Status,
         Groups,
         Log,
-        ClashMode,
-        Connections,
     }
 
     interface Handler {
@@ -83,35 +83,29 @@ open class CommandClient(
         fun appendLogs(message: List<LogEntry>) {}
 
         fun updateGroups(newGroups: MutableList<OutboundGroup>) {}
-
-        fun initializeClashMode(modeList: List<String>, currentMode: String) {}
-
-        fun updateClashMode(newMode: String) {}
-
-        fun writeConnectionEvents(events: ConnectionEvents) {}
     }
 
     private var commandClient: CommandClient? = null
     private val clientHandler = ClientHandler()
 
     fun connect() {
-        disconnect()
-        val options = CommandClientOptions()
-        connectionTypes.forEach { connectionType ->
-            val command =
-                when (connectionType) {
-                    ConnectionType.Status -> Libbox.CommandStatus
-                    ConnectionType.Groups -> Libbox.CommandGroup
-                    ConnectionType.Log -> Libbox.CommandLog
-                    ConnectionType.ClashMode -> Libbox.CommandClashMode
-                    ConnectionType.Connections -> Libbox.CommandConnections
-                }
-            options.addCommand(command)
+        scope.launch(Dispatchers.IO) {
+            disconnect()
+            val options = CommandClientOptions()
+            connectionTypes.forEach { connectionType ->
+                val command =
+                    when (connectionType) {
+                        ConnectionType.Status -> Libbox.CommandStatus
+                        ConnectionType.Groups -> Libbox.CommandGroup
+                        ConnectionType.Log -> Libbox.CommandLog
+                    }
+                options.addCommand(command)
+            }
+            options.statusInterval = 1 * 1000 * 1000 * 1000
+            val client = CommandClient(clientHandler, options)
+            client.connect()
+            this@CommandClient.commandClient = client
         }
-        options.statusInterval = 1 * 1000 * 1000 * 1000
-        val commandClient = CommandClient(clientHandler, options)
-        commandClient.connect()
-        this.commandClient = commandClient
     }
 
     fun disconnect() {
@@ -119,7 +113,6 @@ open class CommandClient(
             runCatching {
                 disconnect()
             }
-//            Seq.destroyRef(refnum)
         }
         commandClient = null
     }
@@ -167,18 +160,10 @@ open class CommandClient(
             getAllHandlers().forEach { it.updateStatus(message) }
         }
 
-        override fun initializeClashMode(modeList: StringIterator, currentMode: String) {
-            val modes = modeList.toList()
-            getAllHandlers().forEach { it.initializeClashMode(modes, currentMode) }
-        }
+        override fun initializeClashMode(modeList: StringIterator, currentMode: String) {}
 
-        override fun updateClashMode(newMode: String) {
-            getAllHandlers().forEach { it.updateClashMode(newMode) }
-        }
+        override fun updateClashMode(newMode: String) {}
 
-        override fun writeConnectionEvents(events: ConnectionEvents?) {
-            if (events == null) return
-            getAllHandlers().forEach { it.writeConnectionEvents(events) }
-        }
+        override fun writeConnectionEvents(events: ConnectionEvents?) {}
     }
 }

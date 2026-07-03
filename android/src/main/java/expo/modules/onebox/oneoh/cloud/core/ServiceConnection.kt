@@ -11,7 +11,6 @@ import expo.modules.onebox.oneoh.cloud.aidl.IService
 import expo.modules.onebox.oneoh.cloud.aidl.IServiceCallback
 import expo.modules.onebox.oneoh.cloud.helper.Action
 import expo.modules.onebox.oneoh.cloud.helper.Alert
-import expo.modules.onebox.oneoh.cloud.helper.Settings
 import expo.modules.onebox.oneoh.cloud.helper.Status
 
 /**
@@ -20,8 +19,7 @@ import expo.modules.onebox.oneoh.cloud.helper.Status
  */
 class ServiceConnection(
     private val context: Context,
-    callback: Callback,
-    private val register: Boolean = true
+    callback: Callback
 ) : ServiceConnection {
 
     companion object {
@@ -35,9 +33,9 @@ class ServiceConnection(
         get() = service?.status?.let { Status.values()[it] } ?: Status.Stopped
 
     fun connect() {
-        val intent = Intent(context, Settings.serviceClass()).setAction(Action.SERVICE)
+        val intent = Intent(context, VPNService::class.java).setAction(Action.SERVICE)
         context.bindService(intent, this, Context.BIND_AUTO_CREATE)
-        Log.d(TAG, "request connect to ${Settings.serviceClass().simpleName}")
+        Log.d(TAG, "request connect to ${VPNService::class.java.simpleName}")
     }
 
     fun disconnect() {
@@ -53,16 +51,16 @@ class ServiceConnection(
             context.unbindService(this)
         } catch (_: IllegalArgumentException) {
         }
-        val intent = Intent(context, Settings.serviceClass()).setAction(Action.SERVICE)
+        val intent = Intent(context, VPNService::class.java).setAction(Action.SERVICE)
         context.bindService(intent, this, Context.BIND_AUTO_CREATE)
-        Log.d(TAG, "request reconnect to ${Settings.serviceClass().simpleName}")
+        Log.d(TAG, "request reconnect to ${VPNService::class.java.simpleName}")
     }
 
     override fun onServiceConnected(name: ComponentName, binder: IBinder) {
         val service = IService.Stub.asInterface(binder)
         this.service = service
         try {
-            if (register) service.registerCallback(serviceCallback)
+            service.registerCallback(serviceCallback)
             serviceCallback.onServiceStatusChanged(service.status)
         } catch (e: RemoteException) {
             Log.e(TAG, "initialize service connection", e)

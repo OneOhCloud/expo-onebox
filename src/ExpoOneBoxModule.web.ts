@@ -1,5 +1,6 @@
 import { NativeModule, registerWebModule } from 'expo';
 
+import type { ExpoOneBoxModuleType } from './ExpoOneBoxModule';
 import { BackgroundRefreshOptions, ExpoOneBoxModuleEvents, VerificationData, VPN_STATUS } from './ExpoOneBox.types';
 
 // 模拟代理节点数据
@@ -14,7 +15,7 @@ function buildMockNodes() {
   return MOCK_PROXY_NODE_TAGS.map(tag => ({ tag, delay: randomDelay(tag) }));
 }
 
-// Mock sing-box config body returned by fetchSubscription. Content is not
+// Mock sing-box config body returned by fetchProfileConfig. Content is not
 // validated on web since start() is also mocked.
 export function buildMockConfigBody(url: string): string {
   return JSON.stringify(
@@ -43,6 +44,13 @@ export function buildMockUserinfoHeader(): string {
 
 const MOCK_DNS_LIST = ['8.8.8.8', '1.1.1.1', '9.9.9.9', '223.5.5.5'];
 
+// Bare MAJOR.MINOR.PATCH mirror of the native LibboxVersion(). Single source of
+// truth is SING_BOX_TAG in modules/expo-onebox/helper/Makefile — this constant
+// must equal it (minus the leading `v`). Drift is caught by
+// src/utils/sing-box-version-sync.test.ts, so this is a scripted obligation,
+// not a silent hand-sync.
+const WEB_STUB_SING_BOX_VERSION = '1.13.14';
+
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B/s`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB/s`;
@@ -64,16 +72,11 @@ class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
   private _uplinkTotal: number = 0;
   private _downlinkTotal: number = 0;
 
-  hello(): string {
-    return 'Hello world! 👋';
-  }
-
   getLibBoxVersion(): string {
     // Native returns bare MAJOR.MINOR.PATCH (no v-prefix) via LibboxVersion()
     // / Libbox.version(). Mirror the shape so getSingBox*Version helpers split
-    // cleanly across platforms. Keep numeric in sync with SING_BOX_TAG in
-    // modules/expo-onebox/helper/Makefile.
-    return '1.13.8';
+    // cleanly across platforms. See WEB_STUB_SING_BOX_VERSION above.
+    return WEB_STUB_SING_BOX_VERSION;
   }
 
   async start(config: string): Promise<void> {
@@ -174,8 +177,11 @@ class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
     console.log('[Web Mock] setCoreLogEnabled:', enabled);
   }
 
-  getCoreLogEnabled(): boolean {
-    return this._coreLogEnabled;
+  // No sing-box core runs on web; the log-level filter is a native concern.
+  // Present as a no-op so the shared mount effect in vpn-context.tsx does not
+  // throw on web (see the bridge-signature four-layer rule).
+  setCoreLogLevel(level: string): void {
+    console.log('[Web Mock] setCoreLogLevel:', level);
   }
 
   async getProxyNodes(): Promise<{ all: { tag: string; delay: number }[]; now: string; autoNow?: string }> {
@@ -212,10 +218,6 @@ class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
     return MOCK_DNS_LIST[idx];
   }
 
-  async triggerNetworkPermission(): Promise<boolean> {
-    return true;
-  }
-
   checkBatteryOptimizationExemption(): boolean {
     return true;
   }
@@ -236,8 +238,8 @@ class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
     return true;
   }
 
-  async fetchSubscription(url: string, _userAgent: string) {
-    console.log('[Web Mock] fetchSubscription:', url);
+  async fetchProfileConfig(url: string, _userAgent: string) {
+    console.log('[Web Mock] fetchProfileConfig:', url);
     return {
       statusCode: 200,
       headers: {
@@ -260,11 +262,12 @@ class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
     console.log('[Web Mock] registerBackgroundConfigRefresh');
   }
 
-  async unregisterBackgroundConfigRefresh(): Promise<void> {}
-
   async executeConfigRefreshNow(url: string, _userAgent: string) {
     const body = buildMockConfigBody(url);
     const header = buildMockUserinfoHeader();
+    // Mirror of parseProfileUserinfo (src/utils/profile-info.ts) — kept inline so
+    // the submodule stays self-contained. Behaviour is locked by the golden
+    // sample in src/utils/profile-info.test.ts; keep the four copies in lockstep.
     const info = {
       upload: parseInt(header.match(/upload=(\d+)/)?.[1] ?? '0', 10),
       download: parseInt(header.match(/download=(\d+)/)?.[1] ?? '0', 10),
@@ -274,13 +277,13 @@ class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
     return {
       status: 'success' as const,
       content: body,
-      subscriptionUpload: info.upload,
-      subscriptionDownload: info.download,
-      subscriptionTotal: info.total,
-      subscriptionExpire: info.expire,
+      profileUpload: info.upload,
+      profileDownload: info.download,
+      profileTotal: info.total,
+      profileExpire: info.expire,
       timestamp: new Date().toISOString(),
       durationMs: 120,
-      subscriptionUserinfoHeader: header,
+      profileUserinfoHeader: header,
       method: 'primary' as const,
       actualUrl: url,
     };
@@ -295,5 +298,12 @@ class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
   }
 
 }
+
+// Conformance gate (D8-05): the web stub must expose every method the native
+// module declares. If a method is added to ExpoOneBoxModule.ts but not mirrored
+// here, this line fails tsc — instead of the app crashing at runtime on web
+// (as it did when setCoreLogLevel was missing). Type-only; erased at build.
+const _webStubConformsToNative = (m: InstanceType<typeof ExpoOneBoxModule>): ExpoOneBoxModuleType => m;
+void _webStubConformsToNative;
 
 export default registerWebModule(ExpoOneBoxModule, 'ExpoOneBox');

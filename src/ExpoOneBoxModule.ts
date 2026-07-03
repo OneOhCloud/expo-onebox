@@ -3,7 +3,6 @@ import { NativeModule, requireNativeModule } from 'expo';
 import { BackgroundRefreshOptions, ConfigRefreshResult, ExpoOneBoxModuleEvents, ConfigFetchResult, VerificationData } from './ExpoOneBox.types';
 
 declare class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
-  hello(): string;
   getLibBoxVersion(): string;
   start(config: string): Promise<void>;
   stop(): Promise<void>;
@@ -23,7 +22,6 @@ declare class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
   /** Returns the config JSON string last passed to start(), after native processing. Empty string if never started. */
   getStartConfig(): string;
   setCoreLogEnabled(enabled: boolean): void;
-  getCoreLogEnabled(): boolean;
   /**
    * Filter entries from the sing-box CommandServer log stream at the
    * earliest native point (before they're serialised into JS events).
@@ -42,8 +40,6 @@ declare class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
   /** Trigger URLTest for a specific outbound tag or group tag (e.g. "ExitGateway"). */
   triggerURLTest(tag: string): Promise<boolean>;
   getBestDns(): Promise<string>;
-  /** iOS: fire a lightweight network request to trigger the system network-access permission prompt. */
-  triggerNetworkPermission(): Promise<boolean>;
   /**
    * Copies the asset at sourceUri to the native working directory as tun.db.
    * Skips if the destination file already exists.
@@ -54,7 +50,7 @@ declare class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
   copy2CacheDbPath(sourceUri: string): Promise<boolean>;
 
   /** Fetch a config URL using DNS resolution + SNI-overriding HTTPS, with optional accelerator fallback. */
-  fetchSubscription(
+  fetchProfileConfig(
     url: string,
     userAgent: string,
   ): Promise<ConfigFetchResult>;
@@ -79,11 +75,11 @@ declare class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
   /** Register (or update) the native periodic background config refresh. */
   registerBackgroundConfigRefresh(url: string, userAgent: string, intervalSeconds: number): Promise<void>;
 
-  /** Cancel the scheduled background config refresh. */
-  unregisterBackgroundConfigRefresh(): Promise<void>;
-
   /** Execute a config refresh immediately (returns result synchronously to JS). */
   executeConfigRefreshNow(url: string, userAgent: string): Promise<ConfigRefreshResult>;
+
+  // NOTE: registerBackgroundConfigRefresh has no unregister counterpart — the
+  // task is replaced/updated in place. Do not re-add a dead unregister method.
 
   /**
    * Return and clear the last result stored by the native background task.
@@ -97,3 +93,7 @@ declare class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
 
 // This call loads the native module object from the JSI.
 export default requireNativeModule<ExpoOneBoxModule>('ExpoOneBox');
+
+// The native method surface, exported as a type so the web stub can assert it
+// implements the full surface at compile time (see ExpoOneBoxModule.web.ts).
+export type ExpoOneBoxModuleType = ExpoOneBoxModule;

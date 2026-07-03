@@ -64,9 +64,7 @@ class ServiceNotification(
                 PendingIntent.getActivity(
                     service,
                     0,
-//                   等价写法： launchIntent?.flag = Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
                     launchIntent?.apply {
-                        // 保持你原来的 Flag
                         flags = Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
                     },
                     flags,

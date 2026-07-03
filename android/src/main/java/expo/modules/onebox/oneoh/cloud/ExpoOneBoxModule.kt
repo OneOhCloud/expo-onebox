@@ -15,6 +15,7 @@ import android.util.Log
 import androidx.core.content.ContextCompat
 import androidx.core.content.getSystemService
 import expo.modules.kotlin.Promise
+import expo.modules.kotlin.functions.Coroutine
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import expo.modules.onebox.oneoh.cloud.core.ServiceConnection
@@ -25,7 +26,7 @@ import expo.modules.onebox.oneoh.cloud.helper.BackgroundConfigWorker
 import expo.modules.onebox.oneoh.cloud.helper.BG_PREFS_NAME
 import expo.modules.onebox.oneoh.cloud.helper.Bugs
 import expo.modules.onebox.oneoh.cloud.helper.Status
-import expo.modules.onebox.oneoh.cloud.helper.fetchSubscriptionWithFallback
+import expo.modules.onebox.oneoh.cloud.helper.fetchProfileConfigWithFallback
 import expo.modules.onebox.oneoh.cloud.helper.findBestDnsServer
 import expo.modules.onebox.oneoh.cloud.helper.getWorkingDir
 import expo.modules.onebox.oneoh.cloud.helper.executeRefreshWith
@@ -44,10 +45,14 @@ import io.nekohasekai.libbox.StringIterator
 import io.nekohasekai.sfa.utils.CommandClient
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.GlobalScope
-import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
 import java.io.File
-import java.net.URL
+
+// SharedPreferences keys mirrored into the background worker's store.
+// Canonical home is BackgroundConfigWorker.kt (alongside KEY_ACCELERATE_URL);
+// declared here for the write side until the worker file is migrated to share them.
+private const val KEY_BG_CONFIG_URL = "config_url"
+private const val KEY_BG_USER_AGENT = "user_agent"
 
 class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
 
@@ -61,11 +66,11 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
     private lateinit var connection: ServiceConnection
     private var vpnPermissionPromise: Promise? = null
     private var batteryOptPromise: Promise? = null
-    private var lastStartConfig: String = ""
+    @Volatile private var lastStartConfig: String = ""
 
     // ==================== 日志/流量实时监控 ====================
 
-    /** 订阅 libbox CommandServer 的日志和状态流量，并推送到 JS 层 */
+    /** 监听 libbox CommandServer 的日志和状态流量，并推送到 JS 层 */
     @OptIn(DelicateCoroutinesApi::class)
     private val statusMonitor by lazy {
         CommandClient(
@@ -110,23 +115,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
                 }
                 override fun updateGroups(newGroups: MutableList<OutboundGroup>) {
                     try {
-                        val all = mutableListOf<Map<String, Any>>()
-                        var now = ""
-                        var autoNow = ""
-                        for (group in newGroups) {
-                            if (group.tag == "ExitGateway") {
-                                now = group.selected ?: ""
-                                val items = group.getItems()
-                                while (items?.hasNext() == true) {
-                                    val item = items.next()
-                                    all.add(mapOf("tag" to item.tag, "delay" to item.urlTestDelay.toInt()))
-                                }
-                                continue
-                            }
-                            if (group.tag == "auto") {
-                                autoNow = group.selected ?: ""
-                            }
-                        }
+                        val (all, now, autoNow) = parseExitGatewayGroups(newGroups.iterator())
                         sendEvent("onGroupUpdate", mapOf("all" to all, "now" to now, "autoNow" to autoNow))
                     } catch (_: Exception) {}
                 }
@@ -141,9 +130,12 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
         const val VPN_REQUEST_CODE = 1001
         const val BATTERY_OPT_REQUEST_CODE = 1002
 
-        var currentStatus: Status = Status.Stopped
-        var isStartingUp: Boolean = false
-        var coreLogEnabled: Boolean = false
+        const val GROUP_EXIT_GATEWAY = "ExitGateway"
+        const val GROUP_AUTO = "auto"
+
+        @Volatile var currentStatus: Status = Status.Stopped
+        @Volatile var isStartingUp: Boolean = false
+        @Volatile var coreLogEnabled: Boolean = false
         /**
          * Maximum sing-box level code to forward to JS. Codes mirror
          * `log/level.go`: panic=0, fatal=1, error=2, warn=3, info=4,
@@ -151,11 +143,12 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
          * dropped at `appendLogs`. Default matches the app default.
          */
         @Volatile var coreLogLevelMax: Int = 4 // info
-        val notification by lazy { application.getSystemService<NotificationManager>()!! }
         val connectivity by lazy { application.getSystemService<ConnectivityManager>()!! }
         val packageManager by lazy { application.packageManager }
         val powerManager by lazy { application.getSystemService<PowerManager>()!! }
         val notificationManager by lazy { application.getSystemService<NotificationManager>()!! }
+        // Alias for the single notificationManager instance (kept for ServiceNotification).
+        val notification get() = notificationManager
         val wifiManager by lazy { application.getSystemService<WifiManager>()!! }
         val clipboard by lazy { application.getSystemService<ClipboardManager>()!! }
     }
@@ -164,7 +157,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
         application = app
         val baseDir = context.filesDir
         baseDir.mkdirs()
-        val workingDir = context.getExternalFilesDir(null) ?: return
+        val workingDir = context.getExternalFilesDir(null) ?: getWorkingDir(context)
         workingDir.mkdirs()
         val tempDir = context.cacheDir
         tempDir.mkdirs()
@@ -199,14 +192,19 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
      */
     private fun sendNativeLog(level: String, tag: String, message: String) {
         val logTag = "ExpoOneBox/$tag"
-        when (level) {
+        val normalizedLevel = when (level) {
+            "error" -> "error"
+            "warn"  -> "warn"
+            else    -> "info"
+        }
+        when (normalizedLevel) {
             "error" -> Log.e(logTag, message)
             "warn"  -> Log.w(logTag, message)
             else    -> Log.i(logTag, message)
         }
         try {
             sendEvent("onNativeLog", mapOf(
-                "level" to level,
+                "level" to normalizedLevel,
                 "tag" to tag,
                 "message" to message,
             ))
@@ -217,7 +215,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
         Name("ExpoOneBox")
 
         // 定义发送到 JS 的事件
-        Events("onStatusChange", "onError", "onLog", "onTrafficUpdate", "onGroupUpdate", "onConfigRefreshResult", "onNativeLog")
+        Events("onStatusChange", "onError", "onLog", "onTrafficUpdate", "onGroupUpdate", "onNativeLog")
 
         OnCreate {
             try {
@@ -311,10 +309,6 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
             Log.d(TAG, "Core log output ${if (enabled) "enabled" else "disabled"}")
         }
 
-        Function("getCoreLogEnabled") {
-            return@Function coreLogEnabled
-        }
-
         // Client-side filter for the CommandServer log stream. Needed
         // because sing-box's `log.level` config only filters stdout
         // and the observable sink — the platform writer (which feeds
@@ -339,7 +333,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
         // JS layer calls this when status transitions STARTING → STOPPED.
         Function("getStartError") {
             return@Function try {
-                val file = java.io.File(getWorkingDir(context), "startup_error.txt")
+                val file = File(getWorkingDir(context), "startup_error.txt")
                 if (file.exists()) file.readText().trim() else ""
             } catch (e: Exception) {
                 ""
@@ -349,7 +343,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
         Function("getStartConfig") {
             if (lastStartConfig.isNotEmpty()) return@Function lastStartConfig
             return@Function try {
-                val file = java.io.File(getWorkingDir(context), "last_start_config.json")
+                val file = File(getWorkingDir(context), "last_start_config.json")
                 if (file.exists()) file.readText().trim() else ""
             } catch (_: Exception) { "" }
         }
@@ -407,7 +401,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
             }
             val uri = android.net.Uri.parse(sourceUri)
             val inputStream = context.contentResolver.openInputStream(uri)
-                ?: context.contentResolver.openInputStream(android.net.Uri.fromFile(java.io.File(uri.path ?: sourceUri.removePrefix("file://"))))
+                ?: context.contentResolver.openInputStream(android.net.Uri.fromFile(File(uri.path ?: sourceUri.removePrefix("file://"))))
                 ?: throw Exception("Cannot open sourceUri: $sourceUri")
             inputStream.use { input ->
                 destFile.outputStream().use { output ->
@@ -423,7 +417,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
             val processedConfig = processConfig(config, context)
             lastStartConfig = processedConfig
             try {
-                java.io.File(getWorkingDir(context), "last_start_config.json").writeText(processedConfig)
+                File(getWorkingDir(context), "last_start_config.json").writeText(processedConfig)
             } catch (_: Exception) {}
 
             // 打印实际传给 VPN 的配置中 inbounds 地址信息，用于排查
@@ -463,81 +457,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
 
         // ---- getProxyNodes: 通过 libbox CommandClient IPC 获取 ExitGateway 节点列表 ----
         AsyncFunction("getProxyNodes") { promise: Promise ->
-            var settled = false
-            var rawClient: io.nekohasekai.libbox.CommandClient? = null
-
-            val options = CommandClientOptions()
-            options.addCommand(Libbox.CommandGroup)
-
-            val handler = object : CommandClientHandler {
-                private fun settle(all: List<Map<String, Any>>, now: String, autoNow: String) {
-                    if (!settled) {
-                        settled = true
-                        rawClient?.runCatching { disconnect() }
-                        promise.resolve(mapOf("all" to all, "now" to now, "autoNow" to autoNow))
-                    }
-                }
-
-                override fun connected() {}
-
-                override fun disconnected(message: String?) {
-                    settle(emptyList(), "", "")
-                }
-
-                override fun writeGroups(message: OutboundGroupIterator?) {
-                    val all = mutableListOf<Map<String, Any>>()
-                    var now = ""
-                    var autoNow = ""
-                    while (message?.hasNext() == true) {
-                        val group = message.next()
-                        if (group.tag == "ExitGateway") {
-                            now = group.selected ?: ""
-                            val items = group.getItems()
-                            while (items?.hasNext() == true) {
-                                val item = items.next()
-                                all.add(mapOf("tag" to item.tag, "delay" to item.urlTestDelay.toInt()))
-                            }
-                            continue
-                        }
-                        if (group.tag == "auto") {
-                            autoNow = group.selected ?: ""
-                        }
-                    }
-                    settle(all, now, autoNow)
-                }
-
-                override fun writeStatus(message: StatusMessage?) {}
-                override fun writeLogs(messageList: LogIterator?) {}
-                override fun clearLogs() {}
-                override fun setDefaultLogLevel(level: Int) {}
-                override fun initializeClashMode(modeList: StringIterator?, currentMode: String?) {}
-                override fun updateClashMode(newMode: String?) {}
-                override fun writeConnectionEvents(events: ConnectionEvents?) {}
-            }
-
-            val client = io.nekohasekai.libbox.CommandClient(handler, options)
-            rawClient = client
-
-            // 5 秒超时保护
-            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                if (!settled) {
-                    settled = true
-                    client.runCatching { disconnect() }
-                    promise.resolve(mapOf("all" to emptyList<Map<String, Any>>(), "now" to "", "autoNow" to ""))
-                }
-            }, 5000)
-
-            // 在后台线程中连接
-            Thread {
-                try {
-                    client.connect()
-                } catch (e: Exception) {
-                    if (!settled) {
-                        settled = true
-                        promise.resolve(mapOf("all" to emptyList<Map<String, Any>>(), "now" to "", "autoNow" to ""))
-                    }
-                }
-            }.start()
+            queryProxyNodes(promise)
         }
 
         // ---- triggerURLTest: 触发 URLTest (单节点 tag 或 group tag 如 "ExitGateway") ----
@@ -556,7 +476,7 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
         AsyncFunction("selectProxyNode") { node: String ->
             try {
                 val client = Libbox.newStandaloneCommandClient()
-                client?.selectOutbound("ExitGateway", node)
+                client?.selectOutbound(GROUP_EXIT_GATEWAY, node)
                 true
             } catch (e: Exception) {
                 Log.w(TAG, "selectProxyNode failed: ${e.message}")
@@ -568,26 +488,20 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
             return@Function Libbox.version()
         }
 
-        Function("hello") {
-            "Hello world! 👋"
-        }
-
-        AsyncFunction("getBestDns") {
-            return@AsyncFunction runBlocking { findBestDnsServer() }
+        AsyncFunction("getBestDns") Coroutine { ->
+            findBestDnsServer()
         }
 
         // ─── Config Fetching (DNS-resolved) ─────────────────────────────────────
 
         // Fetch a config URL using DNS resolution + optional accelerator fallback.
         // Accelerator URL comes from the JS-pushed shared options (SharedPreferences).
-        AsyncFunction("fetchSubscription") { url: String, userAgent: String ->
-            val result = runBlocking {
-                fetchSubscriptionWithFallback(
-                    app,
-                    url,
-                    userAgent,
-                )
-            }
+        AsyncFunction("fetchProfileConfig") Coroutine { url: String, userAgent: String ->
+            val result = fetchProfileConfigWithFallback(
+                app,
+                url,
+                userAgent,
+            )
             mapOf(
                 "statusCode" to result.statusCode,
                 "headers" to result.headers,
@@ -623,22 +537,16 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
         AsyncFunction("registerBackgroundConfigRefresh") { url: String, userAgent: String, intervalSeconds: Int ->
             app.getSharedPreferences(BG_PREFS_NAME, android.content.Context.MODE_PRIVATE)
                 .edit()
-                .putString("config_url", url)
-                .putString("user_agent", userAgent)
-                .putLong("interval_seconds", intervalSeconds.toLong())
+                .putString(KEY_BG_CONFIG_URL, url)
+                .putString(KEY_BG_USER_AGENT, userAgent)
                 .apply()
             BackgroundConfigWorker.schedule(app, intervalSeconds.toLong())
             Log.i(TAG, "Background config refresh registered (interval=${intervalSeconds}s)")
         }
 
-        // Cancel the periodic WorkManager task.
-        AsyncFunction("unregisterBackgroundConfigRefresh") {
-            BackgroundConfigWorker.cancel(app)
-        }
-
         // Execute config refresh immediately (foreground / dev screen).
-        AsyncFunction("executeConfigRefreshNow") { url: String, userAgent: String ->
-            val result = runBlocking { executeRefreshWith(app, url, userAgent) }
+        AsyncFunction("executeConfigRefreshNow") Coroutine { url: String, userAgent: String ->
+            val result = executeRefreshWith(app, url, userAgent)
             // Do NOT storeResult here: JS receives the result directly and calls
             // applyResultToSBConfig() itself. Storing would overwrite any pending
             // background doWork() result in SharedPrefs, causing it to be lost.
@@ -648,21 +556,20 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
         // Return and clear the last result stored by the background worker.
         // Use app (not reactContext) to avoid NullPointerException during bridge teardown.
         Function("getLastConfigRefreshResult") {
-            val result = BackgroundConfigWorker.loadLastResult(app) ?: return@Function null
-            BackgroundConfigWorker.clearLastResult(app)
-            return@Function result
+            // Load and clear as one critical section so a concurrent worker write
+            // is not silently dropped between the two calls. The worker's
+            // storeResult must lock on the same monitor for this to be fully
+            // atomic (cross-file follow-up in BackgroundConfigWorker.kt).
+            synchronized(BackgroundConfigWorker::class.java) {
+                val result = BackgroundConfigWorker.loadLastResult(app) ?: return@Function null
+                BackgroundConfigWorker.clearLastResult(app)
+                return@Function result
+            }
         }
 
         // Whether a WorkManager periodic task is currently enqueued/running.
         AsyncFunction("isBackgroundConfigRefreshRegistered") {
             BackgroundConfigWorker.isRegistered(app)
-        }
-
-        View(ExpoOneBoxView::class) {
-            Prop("url") { view: ExpoOneBoxView, url: URL ->
-                view.webView.loadUrl(url.toString())
-            }
-            Events("onLoad")
         }
     }
 
@@ -717,8 +624,10 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
             // 主动检测启动失败
             if (status == Status.Stopped && wasStarting) {
                 val errMsg = try {
-                    val file = java.io.File(getWorkingDir(context), "startup_error.txt")
-                    if (file.exists()) file.readText().trim() else ""
+                    val file = File(getWorkingDir(context), "startup_error.txt")
+                    // Strip the same source prefix onServiceAlert removes so a single
+                    // failure surfaces consistent text across both onError emissions.
+                    if (file.exists()) file.readText().trim().removePrefix("[binary] ") else ""
                 } catch (_: Exception) { "" }
 
                 val message = errMsg.ifEmpty { "启动异常退出，请检查配置文件。" }
@@ -798,6 +707,104 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
         ContextCompat.startForegroundService(context, intent)
         // 不在此处连接 StatusMonitor，等待服务状态变为 Started 时再连接
         Log.d(TAG, "VPN 服务启动命令已发送")
+    }
+
+    /**
+     * Parse an outbound-group stream into the (nodes, selected, autoSelected)
+     * shape the JS layer consumes. Shared by the live status monitor and the
+     * one-shot getProxyNodes query so the ExitGateway/auto extraction lives in
+     * a single place.
+     */
+    private fun parseExitGatewayGroups(
+        groups: Iterator<OutboundGroup>,
+    ): Triple<List<Map<String, Any>>, String, String> {
+        val all = mutableListOf<Map<String, Any>>()
+        var now = ""
+        var autoNow = ""
+        for (group in groups) {
+            when (group.tag) {
+                GROUP_EXIT_GATEWAY -> {
+                    now = group.selected ?: ""
+                    val items = group.getItems()
+                    while (items?.hasNext() == true) {
+                        val item = items.next()
+                        all.add(mapOf("tag" to item.tag, "delay" to item.urlTestDelay.toInt()))
+                    }
+                }
+                GROUP_AUTO -> autoNow = group.selected ?: ""
+            }
+        }
+        return Triple(all, now, autoNow)
+    }
+
+    /**
+     * One-shot IPC query for the current ExitGateway node list. Connects a
+     * throwaway libbox CommandClient, resolves the promise on the first group
+     * update (or on disconnect / 5s timeout), and tears the client down.
+     */
+    private fun queryProxyNodes(promise: Promise) {
+        var settled = false
+        var rawClient: io.nekohasekai.libbox.CommandClient? = null
+
+        val options = CommandClientOptions()
+        options.addCommand(Libbox.CommandGroup)
+
+        val handler = object : CommandClientHandler {
+            private fun settle(all: List<Map<String, Any>>, now: String, autoNow: String) {
+                if (!settled) {
+                    settled = true
+                    rawClient?.runCatching { disconnect() }
+                    promise.resolve(mapOf("all" to all, "now" to now, "autoNow" to autoNow))
+                }
+            }
+
+            override fun connected() {}
+
+            override fun disconnected(message: String?) {
+                settle(emptyList(), "", "")
+            }
+
+            override fun writeGroups(message: OutboundGroupIterator?) {
+                val groups = object : Iterator<OutboundGroup> {
+                    override fun hasNext() = message?.hasNext() == true
+                    override fun next() = message!!.next()
+                }
+                val (all, now, autoNow) = parseExitGatewayGroups(groups)
+                settle(all, now, autoNow)
+            }
+
+            override fun writeStatus(message: StatusMessage?) {}
+            override fun writeLogs(messageList: LogIterator?) {}
+            override fun clearLogs() {}
+            override fun setDefaultLogLevel(level: Int) {}
+            override fun initializeClashMode(modeList: StringIterator?, currentMode: String?) {}
+            override fun updateClashMode(newMode: String?) {}
+            override fun writeConnectionEvents(events: ConnectionEvents?) {}
+        }
+
+        val client = io.nekohasekai.libbox.CommandClient(handler, options)
+        rawClient = client
+
+        // 5 秒超时保护
+        Handler(Looper.getMainLooper()).postDelayed({
+            if (!settled) {
+                settled = true
+                client.runCatching { disconnect() }
+                promise.resolve(mapOf("all" to emptyList<Map<String, Any>>(), "now" to "", "autoNow" to ""))
+            }
+        }, 5000)
+
+        // 在后台线程中连接
+        Thread {
+            try {
+                client.connect()
+            } catch (e: Exception) {
+                if (!settled) {
+                    settled = true
+                    promise.resolve(mapOf("all" to emptyList<Map<String, Any>>(), "now" to "", "autoNow" to ""))
+                }
+            }
+        }.start()
     }
 
 }

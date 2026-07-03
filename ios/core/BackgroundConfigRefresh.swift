@@ -6,34 +6,95 @@ import BackgroundTasks
 
 struct ConfigRefreshResult: Codable {
     var status: String           // "success" | "failed" | "skipped"
-    var content: String?
-    var subscriptionUpload: Int64
-    var subscriptionDownload: Int64
-    var subscriptionTotal: Int64
-    var subscriptionExpire: Int64
-    var error: String?
+    var content: String? = nil
+    var profileUpload: Int64 = 0
+    var profileDownload: Int64 = 0
+    var profileTotal: Int64 = 0
+    var profileExpire: Int64 = 0
+    var error: String? = nil
     var timestamp: String
     var durationMs: Int64
-    var subscriptionUserinfoHeader: String?
-    var method: String?          // "primary" | "fallback"
-    var actualUrl: String?       // accelerated URL when fallback is used
+    var profileUserinfoHeader: String? = nil
+    var method: String? = nil    // "primary" | "fallback"
+    var actualUrl: String? = nil // accelerated URL when fallback is used
+
+    /// Failure envelope with the traffic quad zero-filled.
+    static func failed(
+        error: String,
+        method: String,
+        timestamp: String,
+        durationMs: Int64,
+        actualUrl: String? = nil
+    ) -> ConfigRefreshResult {
+        ConfigRefreshResult(
+            status: "failed",
+            error: error,
+            timestamp: timestamp,
+            durationMs: durationMs,
+            method: method,
+            actualUrl: actualUrl
+        )
+    }
+
+    /// Skipped envelope (no URL configured) — never ran, so duration is zero.
+    static func skipped(error: String, timestamp: String) -> ConfigRefreshResult {
+        ConfigRefreshResult(
+            status: "skipped",
+            error: error,
+            timestamp: timestamp,
+            durationMs: 0,
+            method: "primary"
+        )
+    }
 
     func toDictionary() -> [String: Any] {
         var dict: [String: Any] = [
             "status": status,
-            "subscriptionUpload": subscriptionUpload,
-            "subscriptionDownload": subscriptionDownload,
-            "subscriptionTotal": subscriptionTotal,
-            "subscriptionExpire": subscriptionExpire,
+            "profileUpload": profileUpload,
+            "profileDownload": profileDownload,
+            "profileTotal": profileTotal,
+            "profileExpire": profileExpire,
             "timestamp": timestamp,
             "durationMs": durationMs,
         ]
         if let content { dict["content"] = content }
         if let error { dict["error"] = error }
-        if let subscriptionUserinfoHeader { dict["subscriptionUserinfoHeader"] = subscriptionUserinfoHeader }
+        if let profileUserinfoHeader { dict["profileUserinfoHeader"] = profileUserinfoHeader }
         if let method { dict["method"] = method }
         if let actualUrl { dict["actualUrl"] = actualUrl }
         return dict
+    }
+}
+
+/// Atomic on-disk shape for the JS-pushed domain allowlist (see D4-16).
+private struct DomainVerificationCache: Codable {
+    let known: [String]
+    let verified: [String]
+    let updatedAt: Double
+}
+
+// MARK: - Typed errors
+
+/// Typed replacement for the untyped `NSError(domain:"ExpoOneBox", code:-1)`
+/// idiom. `errorDescription` reproduces the exact strings the prior NSError
+/// carried, so JS-side messages are unchanged.
+enum ExpoOneBoxError: LocalizedError {
+    case malformedURL(String)
+    case testModePrimaryUnavailable
+    case primaryFailed(String)
+    case bothFailed(primary: String, accelerated: String)
+
+    var errorDescription: String? {
+        switch self {
+        case .malformedURL(let url):
+            return "Malformed URL: \(url)"
+        case .testModePrimaryUnavailable:
+            return "TEST MODE: primary URL unavailable"
+        case .primaryFailed(let message):
+            return message
+        case .bothFailed(let primary, let accelerated):
+            return "primary=\(primary) accelerated=\(accelerated)"
+        }
     }
 }
 
@@ -45,16 +106,17 @@ struct BackgroundConfigRefresh {
 
     // AppGroup UserDefaults — shared between app and extension processes
     private static let appGroupID = "group.cloud.oneoh.networktools"
+    private static let sharedDefaults = UserDefaults(suiteName: appGroupID)
     private static let kConfigUrl       = "bg_config_url"
     private static let kUserAgent       = "bg_user_agent"
     private static let kIntervalSeconds = "bg_interval_seconds"
     private static let kLastResultJSON  = "bg_last_result_json"
     private static let kIsRegistered    = "bg_task_registered"
     // Domain-verification cache pushed by JS (src/utils/domain-verification.ts)
-    // so the bg worker does not re-fetch sing-box.net on every wake.
-    private static let kKnownDomainSha256List    = "bg_known_domain_sha256_list"
-    private static let kVerifiedDomainSha256List = "bg_verified_domain_sha256_list"
-    private static let kDomainVerificationUpdatedAt = "bg_domain_verification_updated_at"
+    // so the bg worker does not re-fetch sing-box.net on every wake. Stored as a
+    // single JSON blob so the three fields are written/read atomically (a
+    // torn multi-key write could pair a fresh timestamp with a stale list).
+    private static let kDomainVerificationCacheJSON = "bg_domain_verification_cache_json"
     // Refresh options mirrored from JS via `setBackgroundConfigRefreshOptions`.
     // Never read the JS-owned SQLite database here: a second SQLite library on
     // the same WAL file breaks in-process POSIX locking and crashes with SIGBUS.
@@ -76,11 +138,11 @@ struct BackgroundConfigRefresh {
     }
 
     private static func isTestPrimaryUrlUnavailableEnabled() -> Bool {
-        return UserDefaults(suiteName: appGroupID)?.bool(forKey: kTestPrimaryUrlUnavailable) ?? false
+        return sharedDefaults?.bool(forKey: kTestPrimaryUrlUnavailable) ?? false
     }
 
     private static func readAccelerateUrl() -> String? {
-        guard let value = UserDefaults(suiteName: appGroupID)?
+        guard let value = sharedDefaults?
                 .string(forKey: kAccelerateUrl)?
                 .trimmingCharacters(in: .whitespacesAndNewlines),
               !value.isEmpty else {
@@ -92,7 +154,7 @@ struct BackgroundConfigRefresh {
     /// Called from JS (`setBackgroundConfigRefreshOptions`) at app init and
     /// whenever the dev toggle flips. Full overwrite of both values, idempotent.
     static func saveRefreshOptions(accelerateUrl: String, testPrimaryUrlUnavailable: Bool) {
-        guard let defaults = UserDefaults(suiteName: appGroupID) else { return }
+        guard let defaults = sharedDefaults else { return }
         defaults.set(accelerateUrl, forKey: kAccelerateUrl)
         defaults.set(testPrimaryUrlUnavailable, forKey: kTestPrimaryUrlUnavailable)
     }
@@ -109,7 +171,7 @@ struct BackgroundConfigRefresh {
                 return
             }
             let handle = Task {
-                let defaults     = UserDefaults(suiteName: appGroupID)
+                let defaults     = sharedDefaults
                 let url          = defaults?.string(forKey: kConfigUrl) ?? ""
                 let ua           = defaults?.string(forKey: kUserAgent) ?? ""
                 let result       = await executeRefreshWith(url: url, userAgent: ua)
@@ -131,7 +193,7 @@ struct BackgroundConfigRefresh {
     // MARK: - Schedule
 
     static func scheduleNextRefresh() {
-        let defaults = UserDefaults(suiteName: appGroupID)
+        let defaults = sharedDefaults
         let interval = defaults?.double(forKey: kIntervalSeconds) ?? 1800
         let request = BGAppRefreshTaskRequest(identifier: taskIdentifier)
         request.earliestBeginDate = Date(timeIntervalSinceNow: interval)
@@ -139,20 +201,25 @@ struct BackgroundConfigRefresh {
             try BGTaskScheduler.shared.submit(request)
             NSLog("[BackgroundConfigRefresh] Next refresh scheduled in \(Int(interval))s")
         } catch {
+            // Submit failed → the continuation chain is broken. Clear the intent
+            // flag so isRegistered() reflects reality instead of staying true
+            // until the next cold start. (Follow-up: isRegistered() should query
+            // BGTaskScheduler.getPendingTaskRequests for the authoritative state.)
+            defaults?.set(false, forKey: kIsRegistered)
             NSLog("[BackgroundConfigRefresh] Failed to schedule: \(error.localizedDescription)")
         }
     }
 
     static func cancelScheduled() {
         BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: taskIdentifier)
-        UserDefaults(suiteName: appGroupID)?.set(false, forKey: kIsRegistered)
+        sharedDefaults?.set(false, forKey: kIsRegistered)
         NSLog("[BackgroundConfigRefresh] Scheduled task cancelled")
     }
 
     // MARK: - Persist configuration for native worker
 
     static func saveConfig(url: String, userAgent: String, intervalSeconds: Int) {
-        guard let defaults = UserDefaults(suiteName: appGroupID) else { return }
+        guard let defaults = sharedDefaults else { return }
         defaults.set(url, forKey: kConfigUrl)
         defaults.set(userAgent, forKey: kUserAgent)
         defaults.set(intervalSeconds, forKey: kIntervalSeconds)
@@ -164,31 +231,55 @@ struct BackgroundConfigRefresh {
     /// allowlist instead of making its own HTTP fetch. Stores an
     /// updated-at timestamp for TTL comparison in `verifyDomain`.
     static func saveDomainVerificationCache(known: [String], verified: [String]) {
-        guard let defaults = UserDefaults(suiteName: appGroupID) else { return }
-        defaults.set(known,    forKey: kKnownDomainSha256List)
-        defaults.set(verified, forKey: kVerifiedDomainSha256List)
-        defaults.set(Date().timeIntervalSince1970, forKey: kDomainVerificationUpdatedAt)
+        guard let defaults = sharedDefaults else { return }
+        let cache = DomainVerificationCache(
+            known: known,
+            verified: verified,
+            updatedAt: Date().timeIntervalSince1970
+        )
+        guard let data = try? JSONEncoder().encode(cache),
+              let json = String(data: data, encoding: .utf8) else { return }
+        defaults.set(json, forKey: kDomainVerificationCacheJSON)
     }
 
     /// Load the JS-pushed allowlist if it exists and has not expired. A nil
     /// return means the caller should fall back to its built-in list + live
     /// fetch; a non-nil tuple is authoritative.
     private static func loadFreshDomainVerificationCache() -> (known: [String], verified: [String])? {
-        guard let defaults = UserDefaults(suiteName: appGroupID) else { return nil }
-        let updatedAt = defaults.double(forKey: kDomainVerificationUpdatedAt)
-        guard updatedAt > 0,
-              Date().timeIntervalSince1970 - updatedAt < domainVerificationTtlSeconds else {
+        guard let defaults = sharedDefaults,
+              let json = defaults.string(forKey: kDomainVerificationCacheJSON),
+              let data = json.data(using: .utf8),
+              let cache = try? JSONDecoder().decode(DomainVerificationCache.self, from: data) else {
             return nil
         }
-        let known    = defaults.stringArray(forKey: kKnownDomainSha256List)    ?? []
-        let verified = defaults.stringArray(forKey: kVerifiedDomainSha256List) ?? []
-        if known.isEmpty && verified.isEmpty { return nil }
-        return (known, verified)
+        guard cache.updatedAt > 0,
+              Date().timeIntervalSince1970 - cache.updatedAt < domainVerificationTtlSeconds else {
+            return nil
+        }
+        if cache.known.isEmpty && cache.verified.isEmpty { return nil }
+        return (cache.known, cache.verified)
     }
 
     // MARK: - Execute refresh (usable from both background task and foreground JS call)
 
-    /// Native fetchSubscription path with optional accelerator fallback.
+    /// Reads the JS-pushed test/accelerate switches and logs their state before a
+    /// fetch attempt. `context` identifies the calling path in the log line.
+    /// Shared by `fetchProfileConfigWithFallback` and `executeRefreshWith`.
+    private static func readRefreshSwitches(
+        context: String
+    ) -> (testPrimaryUnavailable: Bool, accelerateUrl: String?) {
+        let testPrimaryUnavailable = isTestPrimaryUrlUnavailableEnabled()
+        let accelerateUrl = readAccelerateUrl()
+        NSLog(
+            "[CONFIG_LOAD] 请求前开关状态(%@): testPrimaryUnavailable=%@, accelerate=%@",
+            context,
+            testPrimaryUnavailable ? "true" : "false",
+            summarizeAccelerateUrl(accelerateUrl)
+        )
+        return (testPrimaryUnavailable, accelerateUrl)
+    }
+
+    /// Native fetchProfileConfig path with optional accelerator fallback.
     ///
     /// Rules:
     ///   1. Try primary URL first.
@@ -199,16 +290,12 @@ struct BackgroundConfigRefresh {
     /// actively throws to simulate real network failure for fallback testing.
     ///
     /// Cancellation never triggers accelerator fallback.
-    static func fetchSubscriptionWithFallback(
+    static func fetchProfileConfigWithFallback(
         url: String,
         userAgent: String
     ) async throws -> ConfigFetchResult {
         guard !url.isEmpty, let parsedURL = URL(string: url) else {
-            throw NSError(
-                domain: "ExpoOneBox",
-                code: -1,
-                userInfo: [NSLocalizedDescriptionKey: "Malformed URL: \(url)"]
-            )
+            throw ExpoOneBoxError.malformedURL(url)
         }
 
         let hostname = parsedURL.host ?? ""
@@ -217,23 +304,13 @@ struct BackgroundConfigRefresh {
         if !verified {
             NSLog("[CONFIG_LOAD] 方式=DOMAIN_UNVERIFIED, 域名SHA256=%@, 加速备用已禁用", domainSha)
         }
-        let testPrimaryUnavailable = isTestPrimaryUrlUnavailableEnabled()
-        let accelerateUrl = readAccelerateUrl()
-        NSLog(
-            "[CONFIG_LOAD] 请求前开关状态(fetchSubscription): testPrimaryUnavailable=%@, accelerate=%@",
-            testPrimaryUnavailable ? "true" : "false",
-            summarizeAccelerateUrl(accelerateUrl)
-        )
+        let (testPrimaryUnavailable, accelerateUrl) = readRefreshSwitches(context: "fetchProfileConfig")
 
         var primaryError = ""
         do {
             if testPrimaryUnavailable {
                 NSLog("[CONFIG_LOAD] 测试模式=PRIMARY_UNAVAILABLE, 主地址主动抛出异常")
-                throw NSError(
-                    domain: "ExpoOneBox",
-                    code: -1,
-                    userInfo: [NSLocalizedDescriptionKey: "TEST MODE: primary URL unavailable"]
-                )
+                throw ExpoOneBoxError.testModePrimaryUnavailable
             }
 
             let primary = try await ConfigFetcher.fetch(url: parsedURL, userAgent: userAgent)
@@ -252,31 +329,24 @@ struct BackgroundConfigRefresh {
         }
 
         if !verified {
-            throw NSError(
-                domain: "ExpoOneBox",
-                code: -1,
-                userInfo: [NSLocalizedDescriptionKey: primaryError]
-            )
+            throw ExpoOneBoxError.primaryFailed(primaryError)
         }
 
         guard let accBase = accelerateUrl,
               let accURL  = buildAcceleratedURL(from: parsedURL, accelerateBase: accBase) else {
-            throw NSError(
-                domain: "ExpoOneBox",
-                code: -1,
-                userInfo: [NSLocalizedDescriptionKey: primaryError]
-            )
+            throw ExpoOneBoxError.primaryFailed(primaryError)
         }
 
+        // NOTE: iOS emits FALLBACK_ACCELERATOR here — i.e. when the accelerated
+        // fetch is *about to be attempted* — whereas Android emits the same token
+        // only after the fallback *succeeds* (see config-fetch-policy.md token
+        // table). Aligning the emit timing (or documenting it per-token in that
+        // doc) is a coordinator follow-up; the token value is left unchanged.
         NSLog("[CONFIG_LOAD] 方式=FALLBACK_ACCELERATOR, 原因=%@, 加速URL=%@", primaryError, summarizeAccelerateUrl(accURL.absoluteString))
         do {
             return try await ConfigFetcher.fetch(url: accURL, userAgent: userAgent)
         } catch {
-            throw NSError(
-                domain: "ExpoOneBox",
-                code: -1,
-                userInfo: [NSLocalizedDescriptionKey: "primary=\(primaryError) accelerated=\(error.localizedDescription)"]
-            )
+            throw ExpoOneBoxError.bothFailed(primary: primaryError, accelerated: error.localizedDescription)
         }
     }
 
@@ -292,14 +362,7 @@ struct BackgroundConfigRefresh {
         let isoStart = ISO8601DateFormatter().string(from: start)
 
         guard !url.isEmpty, let parsedURL = URL(string: url) else {
-            return ConfigRefreshResult(
-                status: "skipped",
-                subscriptionUpload: 0, subscriptionDownload: 0,
-                subscriptionTotal: 0, subscriptionExpire: 0,
-                error: "No URL configured",
-                timestamp: isoStart, durationMs: 0,
-                method: "primary"
-            )
+            return .skipped(error: "No URL configured", timestamp: isoStart)
         }
 
         // ── Domain verification ───────────────────────────────────────────────
@@ -309,13 +372,7 @@ struct BackgroundConfigRefresh {
         if !verified {
             NSLog("[CONFIG_LOAD] 方式=DOMAIN_UNVERIFIED, 域名SHA256=%@, 加速备用已禁用", domainSha)
         }
-        let testPrimaryUnavailable = isTestPrimaryUrlUnavailableEnabled()
-        let accelerateUrl = readAccelerateUrl()
-        NSLog(
-            "[CONFIG_LOAD] 请求前开关状态(executeRefresh): testPrimaryUnavailable=%@, accelerate=%@",
-            testPrimaryUnavailable ? "true" : "false",
-            summarizeAccelerateUrl(accelerateUrl)
-        )
+        let (testPrimaryUnavailable, accelerateUrl) = readRefreshSwitches(context: "executeRefresh")
 
         // ── Try primary URL ───────────────────────────────────────────────────
         var primaryError = ""
@@ -323,11 +380,7 @@ struct BackgroundConfigRefresh {
         do {
             if testPrimaryUnavailable {
                 NSLog("[CONFIG_LOAD] 测试模式=PRIMARY_UNAVAILABLE, 主地址主动抛出异常")
-                throw NSError(
-                    domain: "ExpoOneBox",
-                    code: -1,
-                    userInfo: [NSLocalizedDescriptionKey: "TEST MODE: primary URL unavailable"]
-                )
+                throw ExpoOneBoxError.testModePrimaryUnavailable
             }
 
             let result = try await ConfigFetcher.fetch(url: parsedURL, userAgent: userAgent)
@@ -335,13 +388,11 @@ struct BackgroundConfigRefresh {
 
             guard result.statusCode >= 200 && result.statusCode < 300 else {
                 // HTTP error — do not fall back
-                return ConfigRefreshResult(
-                    status: "failed",
-                    subscriptionUpload: 0, subscriptionDownload: 0,
-                    subscriptionTotal: 0, subscriptionExpire: 0,
+                return .failed(
                     error: "HTTP \(result.statusCode)",
-                    timestamp: isoStart, durationMs: durationMs,
-                    method: "primary"
+                    method: "primary",
+                    timestamp: isoStart,
+                    durationMs: durationMs
                 )
             }
 
@@ -351,13 +402,13 @@ struct BackgroundConfigRefresh {
             return ConfigRefreshResult(
                 status: "success",
                 content: result.body,
-                subscriptionUpload: info.upload,
-                subscriptionDownload: info.download,
-                subscriptionTotal: info.total,
-                subscriptionExpire: info.expire,
+                profileUpload: info.upload,
+                profileDownload: info.download,
+                profileTotal: info.total,
+                profileExpire: info.expire,
                 timestamp: isoStart,
                 durationMs: durationMs,
-                subscriptionUserinfoHeader: headerValue,
+                profileUserinfoHeader: headerValue,
                 method: "primary"
             )
         } catch {
@@ -368,94 +419,89 @@ struct BackgroundConfigRefresh {
         if Task.isCancelled {
             let durationMs = Int64(Date().timeIntervalSince(start) * 1000)
             NSLog("[CONFIG_LOAD] 方式=CANCELLED, 不触发回落")
-            return ConfigRefreshResult(
-                status: "failed",
-                subscriptionUpload: 0, subscriptionDownload: 0,
-                subscriptionTotal: 0, subscriptionExpire: 0,
+            return .failed(
                 error: "CANCELLED",
-                timestamp: isoStart, durationMs: durationMs,
-                method: "primary"
+                method: "primary",
+                timestamp: isoStart,
+                durationMs: durationMs
             )
         }
 
         // ── Fallback to accelerated URL ───────────────────────────────────────
         if !verified {
-                let durationMs = Int64(Date().timeIntervalSince(start) * 1000)
-                NSLog("[CONFIG_LOAD] 方式=ACCELERATOR_SKIPPED, 原因=域名未验证, 主地址原因=%@", primaryError)
-                return ConfigRefreshResult(
-                    status: "failed",
-                    subscriptionUpload: 0, subscriptionDownload: 0,
-                    subscriptionTotal: 0, subscriptionExpire: 0,
-                    error: primaryError,
-                    timestamp: isoStart, durationMs: durationMs,
-                    method: "primary"
-                )
-            }
+            let durationMs = Int64(Date().timeIntervalSince(start) * 1000)
+            NSLog("[CONFIG_LOAD] 方式=ACCELERATOR_SKIPPED, 原因=域名未验证, 主地址原因=%@", primaryError)
+            return .failed(
+                error: primaryError,
+                method: "primary",
+                timestamp: isoStart,
+                durationMs: durationMs
+            )
+        }
 
-            guard let accBase = accelerateUrl,
-                  let accURL  = buildAcceleratedURL(from: parsedURL, accelerateBase: accBase) else {
-                let durationMs = Int64(Date().timeIntervalSince(start) * 1000)
-                NSLog("[CONFIG_LOAD] 方式=ACCELERATOR_UNAVAILABLE, 原因=未配置或构建失败")
-                return ConfigRefreshResult(
-                    status: "failed",
-                    subscriptionUpload: 0, subscriptionDownload: 0,
-                    subscriptionTotal: 0, subscriptionExpire: 0,
-                    error: primaryError,
-                    timestamp: isoStart, durationMs: durationMs,
-                    method: "primary"
-                )
-            }
+        guard let accBase = accelerateUrl,
+              let accURL  = buildAcceleratedURL(from: parsedURL, accelerateBase: accBase) else {
+            let durationMs = Int64(Date().timeIntervalSince(start) * 1000)
+            NSLog("[CONFIG_LOAD] 方式=ACCELERATOR_UNAVAILABLE, 原因=未配置或构建失败")
+            return .failed(
+                error: primaryError,
+                method: "primary",
+                timestamp: isoStart,
+                durationMs: durationMs
+            )
+        }
 
-            NSLog("[CONFIG_LOAD] 方式=FALLBACK_ACCELERATOR, 原因=%@, 加速URL=%@", primaryError, summarizeAccelerateUrl(accURL.absoluteString))
+        // NOTE: iOS emits FALLBACK_ACCELERATOR here — when the accelerated fetch
+        // is *about to be attempted* — whereas Android emits the same token only
+        // after the fallback *succeeds* (see config-fetch-policy.md token table).
+        // Aligning the emit timing (or documenting it per-token) is a coordinator
+        // follow-up; the token value is left unchanged.
+        NSLog("[CONFIG_LOAD] 方式=FALLBACK_ACCELERATOR, 原因=%@, 加速URL=%@", primaryError, summarizeAccelerateUrl(accURL.absoluteString))
 
-            // ── Try accelerated URL ───────────────────────────────────────────
-            do {
-                let accResult  = try await ConfigFetcher.fetch(url: accURL, userAgent: userAgent)
-                let durationMs = Int64(Date().timeIntervalSince(start) * 1000)
+        // ── Try accelerated URL ───────────────────────────────────────────
+        do {
+            let accResult  = try await ConfigFetcher.fetch(url: accURL, userAgent: userAgent)
+            let durationMs = Int64(Date().timeIntervalSince(start) * 1000)
 
-                guard accResult.statusCode >= 200 && accResult.statusCode < 300 else {
-                    NSLog("[CONFIG_LOAD] 方式=BOTH_FAILED, 主地址原因=%@, 加速地址原因=HTTP %d", primaryError, accResult.statusCode)
-                    return ConfigRefreshResult(
-                        status: "failed",
-                        subscriptionUpload: 0, subscriptionDownload: 0,
-                        subscriptionTotal: 0, subscriptionExpire: 0,
-                        error: "primary=\(primaryError) accelerated=HTTP \(accResult.statusCode)",
-                        timestamp: isoStart, durationMs: durationMs,
-                        method: "fallback",
-                        actualUrl: accURL.absoluteString
-                    )
-                }
-
-                let headerValue = accResult.headers["subscription-userinfo"]
-                let info = parseUserinfo(headerValue)
-                NSLog("[CONFIG_LOAD] 方式=FALLBACK_ACCELERATOR, 上传=%lld, 下载=%lld, 总计=%lld, 过期=%lld", info.upload, info.download, info.total, info.expire)
-                return ConfigRefreshResult(
-                    status: "success",
-                    content: accResult.body,
-                    subscriptionUpload: info.upload,
-                    subscriptionDownload: info.download,
-                    subscriptionTotal: info.total,
-                    subscriptionExpire: info.expire,
+            guard accResult.statusCode >= 200 && accResult.statusCode < 300 else {
+                NSLog("[CONFIG_LOAD] 方式=BOTH_FAILED, 主地址原因=%@, 加速地址原因=HTTP %d", primaryError, accResult.statusCode)
+                return .failed(
+                    error: "primary=\(primaryError) accelerated=HTTP \(accResult.statusCode)",
+                    method: "fallback",
                     timestamp: isoStart,
                     durationMs: durationMs,
-                    subscriptionUserinfoHeader: headerValue,
-                    method: "fallback",
-                    actualUrl: accURL.absoluteString
-                )
-            } catch {
-                let durationMs = Int64(Date().timeIntervalSince(start) * 1000)
-                let accError   = error.localizedDescription
-                NSLog("[CONFIG_LOAD] 方式=BOTH_FAILED, 主地址原因=%@, 加速地址原因=%@", primaryError, accError)
-                return ConfigRefreshResult(
-                    status: "failed",
-                    subscriptionUpload: 0, subscriptionDownload: 0,
-                    subscriptionTotal: 0, subscriptionExpire: 0,
-                    error: "primary=\(primaryError) accelerated=\(accError)",
-                    timestamp: isoStart, durationMs: durationMs,
-                    method: "fallback",
                     actualUrl: accURL.absoluteString
                 )
             }
+
+            let headerValue = accResult.headers["subscription-userinfo"]
+            let info = parseUserinfo(headerValue)
+            NSLog("[CONFIG_LOAD] 方式=FALLBACK_ACCELERATOR, 上传=%lld, 下载=%lld, 总计=%lld, 过期=%lld", info.upload, info.download, info.total, info.expire)
+            return ConfigRefreshResult(
+                status: "success",
+                content: accResult.body,
+                profileUpload: info.upload,
+                profileDownload: info.download,
+                profileTotal: info.total,
+                profileExpire: info.expire,
+                timestamp: isoStart,
+                durationMs: durationMs,
+                profileUserinfoHeader: headerValue,
+                method: "fallback",
+                actualUrl: accURL.absoluteString
+            )
+        } catch {
+            let durationMs = Int64(Date().timeIntervalSince(start) * 1000)
+            let accError   = error.localizedDescription
+            NSLog("[CONFIG_LOAD] 方式=BOTH_FAILED, 主地址原因=%@, 加速地址原因=%@", primaryError, accError)
+            return .failed(
+                error: "primary=\(primaryError) accelerated=\(accError)",
+                method: "fallback",
+                timestamp: isoStart,
+                durationMs: durationMs,
+                actualUrl: accURL.absoluteString
+            )
+        }
     }
 
     // MARK: - Domain verification
@@ -551,14 +597,14 @@ struct BackgroundConfigRefresh {
     // MARK: - Persistent result storage
 
     static func storeResult(_ result: ConfigRefreshResult) {
-        guard let defaults = UserDefaults(suiteName: appGroupID),
+        guard let defaults = sharedDefaults,
               let data = try? JSONEncoder().encode(result),
               let json = String(data: data, encoding: .utf8) else { return }
         defaults.set(json, forKey: kLastResultJSON)
     }
 
     static func loadLastResult() -> [String: Any]? {
-        guard let defaults = UserDefaults(suiteName: appGroupID),
+        guard let defaults = sharedDefaults,
               let json = defaults.string(forKey: kLastResultJSON),
               let data = json.data(using: .utf8),
               let result = try? JSONDecoder().decode(ConfigRefreshResult.self, from: data)
@@ -567,11 +613,11 @@ struct BackgroundConfigRefresh {
     }
 
     static func clearLastResult() {
-        UserDefaults(suiteName: appGroupID)?.removeObject(forKey: kLastResultJSON)
+        sharedDefaults?.removeObject(forKey: kLastResultJSON)
     }
 
     static func isRegistered() -> Bool {
-        return UserDefaults(suiteName: appGroupID)?.bool(forKey: kIsRegistered) ?? false
+        return sharedDefaults?.bool(forKey: kIsRegistered) ?? false
     }
 
     // MARK: - subscription-userinfo header parser

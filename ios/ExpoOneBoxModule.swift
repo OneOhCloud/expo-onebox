@@ -2,6 +2,12 @@ import ExpoModulesCore
 @preconcurrency import Libbox
 @preconcurrency import NetworkExtension
 
+// NOTE (D4-10): `@unchecked Sendable` suppresses the compiler's data-race
+// checking but the races are real — `isStartingUp`, `currentStatus`,
+// `coreLogLevelMax`, `trafficMonitor` and `vpnManager` are read/written across
+// the Expo async executor, the main queue (NEVPNStatus observer) and background
+// dispatch queues with no lock. A proper fix (actor isolation or a serial queue)
+// needs a build to verify and is out of scope for this surgical pass.
 public class ExpoOneBoxModule: Module, @unchecked Sendable {
 
     // Extension bundle identifier — must match the NE target's PRODUCT_BUNDLE_IDENTIFIER
@@ -29,7 +35,7 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
     public func definition() -> ModuleDefinition {
         Name("ExpoOneBox")
 
-        Events("onStatusChange", "onError", "onLog", "onTrafficUpdate", "onGroupUpdate", "onConfigRefreshResult", "onNativeLog")
+        Events("onStatusChange", "onError", "onLog", "onTrafficUpdate", "onGroupUpdate", "onNativeLog")
 
         OnCreate {
             self.initializeLibbox()
@@ -47,25 +53,30 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
             self.cleanup()
         }
 
-        Function("hello") {
-            return "Hello world! 👋"
-        }
-
         Function("getLibBoxVersion") {
             return LibboxVersion()
         }
 
-        Function("getStatus") {
-            return self.currentStatus
+        Function("getStatus") { () -> Int in
+            // Query the live tunnel status (matching Android's getStatus) rather
+            // than the async-populated cache, so JS reads the correct value on
+            // cold start when the VPN was already connected.
+            guard let manager = self.vpnManager else { return self.currentStatus }
+            let live: Int
+            switch manager.connection.status {
+            case .invalid, .disconnected: live = 0
+            case .connecting, .reasserting: live = 1
+            case .connected: live = 2
+            case .disconnecting: live = 3
+            @unknown default: return self.currentStatus
+            }
+            self.currentStatus = live
+            return live
         }
 
         Function("setCoreLogEnabled") { (enabled: Bool) in
             self.coreLogEnabled = enabled
             NSLog("[ExpoOneBox] Core log output \(enabled ? "enabled" : "disabled")")
-        }
-
-        Function("getCoreLogEnabled") {
-            return self.coreLogEnabled
         }
 
         // Client-side filter for the CommandServer log stream. sing-box's
@@ -106,6 +117,10 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
             do {
                 let manager = try await self.loadOrCreateManager()
                 self.vpnManager = manager
+                // Semantic divergence from Android: this returns whether the VPN
+                // profile was installed and enabled, NOT the user's Allow/Deny
+                // choice on the system dialog. Android returns the real dialog
+                // result. Callers must not treat `true` as "user consented".
                 return manager.isEnabled
             } catch {
                 NSLog("[ExpoOneBox] requestVpnPermission error: \(error.localizedDescription)")
@@ -200,30 +215,16 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
         }
 
         // Get the best DNS server by testing latency to multiple DNS servers
-        AsyncFunction("getBestDns") { () async throws -> String in
+        AsyncFunction("getBestDns") { () async -> String in
             return await DnsTester.findBest()
-        }
-
-        // Trigger iOS network access permission prompt.
-        // iOS shows an "Allow network access" alert on the very first outbound
-        // connection. Calling this on first launch lets us request it early
-        // instead of silently blocking VPN traffic.
-        AsyncFunction("triggerNetworkPermission") { () async -> Bool in
-            return await withCheckedContinuation { continuation in
-                let url = URL(string: "https://captive.apple.com/hotspot-detect.html")!
-                let task = URLSession.shared.dataTask(with: url) { _, _, _ in
-                    continuation.resume(returning: true)
-                }
-                task.resume()
-            }
         }
 
         // ─── Config Fetching (DNS-resolved) ─────────────────────────────────────
 
         // Fetch a config URL with DNS-resolved primary + optional accelerator fallback.
         // Accelerator URL comes from the JS-pushed shared options (AppGroup UserDefaults).
-        AsyncFunction("fetchSubscription") { (url: String, userAgent: String) async throws -> [String: Any] in
-            let result = try await BackgroundConfigRefresh.fetchSubscriptionWithFallback(
+        AsyncFunction("fetchProfileConfig") { (url: String, userAgent: String) async throws -> [String: Any] in
+            let result = try await BackgroundConfigRefresh.fetchProfileConfigWithFallback(
                 url: url,
                 userAgent: userAgent
             )
@@ -303,12 +304,7 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
         // Copies the bundled asset (sourceUri = file:// URI) into the AppGroup Caches dir as tun.db.
         // Skips if the destination already exists. Returns true if copied, false if skipped.
         AsyncFunction("copy2CacheDbPath") { (sourceUri: String) -> Bool in
-            guard let sharedDir = FileManager.default.containerURL(
-                forSecurityApplicationGroupIdentifier: Self.appGroupID
-            ) else { return false }
-            let cacheDir = sharedDir
-                .appendingPathComponent("Library", isDirectory: true)
-                .appendingPathComponent("Caches", isDirectory: true)
+            guard let cacheDir = self.appGroupCachesURL() else { return false }
             try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
             let destURL = cacheDir.appendingPathComponent("tun.db")
             if FileManager.default.fileExists(atPath: destURL.path) {
@@ -319,15 +315,21 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
             try data.write(to: destURL, options: .atomic)
             return true
         }
+    }
 
-        View(ExpoOneBoxView.self) {
-            Prop("url") { (view: ExpoOneBoxView, url: URL) in
-                if view.webView.url != url {
-                    view.webView.load(URLRequest(url: url))
-                }
-            }
-            Events("onLoad")
-        }
+    // MARK: - App Group Paths
+
+    /// The shared App Group container URL, or nil if unavailable.
+    /// Single derivation point for `Self.appGroupID` file access.
+    private func appGroupContainerURL() -> URL? {
+        FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: Self.appGroupID)
+    }
+
+    /// `<AppGroup>/Library/Caches` — must match the extension's FilePath.
+    private func appGroupCachesURL() -> URL? {
+        appGroupContainerURL()?
+            .appendingPathComponent("Library", isDirectory: true)
+            .appendingPathComponent("Caches", isDirectory: true)
     }
 
     // MARK: - Initialization
@@ -348,19 +350,16 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
         }
     }
 
-    private func initializeLibbox() {        guard !isInitialized else { return }
+    private func initializeLibbox() {
+        guard !isInitialized else { return }
 
         // Use App Group shared directory — must match extension's FilePath
-        guard let sharedDir = FileManager.default.containerURL(
-            forSecurityApplicationGroupIdentifier: Self.appGroupID
-        ) else {
+        guard let sharedDir = appGroupContainerURL(),
+              let cacheDir = appGroupCachesURL() else {
             NSLog("[ExpoOneBox] ERROR: App Group container not available")
             return
         }
 
-        let cacheDir = sharedDir
-            .appendingPathComponent("Library", isDirectory: true)
-            .appendingPathComponent("Caches", isDirectory: true)
         let workingDir = cacheDir.appendingPathComponent("Working", isDirectory: true)
 
         for dir in [workingDir, cacheDir] {
@@ -428,13 +427,7 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
               var cacheFile = experimental["cache_file"] as? [String: Any]
         else { return config }
 
-        guard let sharedDir = FileManager.default.containerURL(
-            forSecurityApplicationGroupIdentifier: Self.appGroupID
-        ) else { return config }
-
-        let cacheDir = sharedDir
-            .appendingPathComponent("Library", isDirectory: true)
-            .appendingPathComponent("Caches", isDirectory: true)
+        guard let cacheDir = appGroupCachesURL() else { return config }
         try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
 
         cacheFile["path"] = cacheDir.appendingPathComponent("tun.db").path
@@ -588,7 +581,10 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
                         self.sendError(type: "StartServiceFailed", message: errMsg, source: "binary")
                     } else {
                         NSLog("[ExpoOneBox] No error in file, sending generic failure")
-                        self.sendError(type: "StartServiceFailed", message: "启动异常退出，请检查配置文件。", source: "binary")
+                        // Emit a stable machine token, not user-visible text — the
+                        // JS layer maps it to a localized string (i18n follow-up owned
+                        // by the coordinator). Keeps the native layer i18n-free.
+                        self.sendError(type: "StartServiceFailed", message: "START_FAILED_GENERIC", source: "binary")
                     }
                 }
             }
@@ -620,17 +616,13 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
     // MARK: - Last Start Config File
 
     private func writeLastStartConfig(_ config: String) {
-        guard let sharedDir = FileManager.default.containerURL(
-            forSecurityApplicationGroupIdentifier: Self.appGroupID
-        ) else { return }
+        guard let sharedDir = appGroupContainerURL() else { return }
         let filePath = sharedDir.appendingPathComponent("last_start_config.json")
         try? config.write(to: filePath, atomically: true, encoding: .utf8)
     }
 
     private func readLastStartConfig() -> String {
-        guard let sharedDir = FileManager.default.containerURL(
-            forSecurityApplicationGroupIdentifier: Self.appGroupID
-        ) else { return "" }
+        guard let sharedDir = appGroupContainerURL() else { return "" }
         let filePath = sharedDir.appendingPathComponent("last_start_config.json")
         guard FileManager.default.fileExists(atPath: filePath.path) else { return "" }
         return (try? String(contentsOf: filePath, encoding: .utf8)) ?? ""
@@ -641,9 +633,7 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
     /// Read the shared startup_error.txt written by the Network Extension on failure.
     /// Returns empty string if the file doesn't exist or the last start succeeded.
     private func readStartupError() -> String {
-        guard let sharedDir = FileManager.default.containerURL(
-            forSecurityApplicationGroupIdentifier: Self.appGroupID
-        ) else { return "" }
+        guard let sharedDir = appGroupContainerURL() else { return "" }
         let errorFilePath = sharedDir.appendingPathComponent("startup_error.txt")
         guard FileManager.default.fileExists(atPath: errorFilePath.path) else { return "" }
         let content = (try? String(contentsOf: errorFilePath, encoding: .utf8)) ?? ""
@@ -654,15 +644,12 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
 
     /// 读取扩展的 stderr.log 文件
     private func readExtensionLogs() -> String {
-        guard let sharedDir = FileManager.default.containerURL(
-            forSecurityApplicationGroupIdentifier: Self.appGroupID
-        ) else {
+        // NOTE (D3b-25): this returns in-band "Error: …" strings mixed into the
+        // normal log data stream instead of throwing. Left as-is per audit scope;
+        // getExtensionLogs is a JS-unreachable orphan (D5-07) pending TS wiring.
+        guard let cacheDir = appGroupCachesURL() else {
             return "Error: Cannot access app group container"
         }
-
-        let cacheDir = sharedDir
-            .appendingPathComponent("Library", isDirectory: true)
-            .appendingPathComponent("Caches", isDirectory: true)
         let logPath = cacheDir.appendingPathComponent("stderr.log")
 
         do {
@@ -719,9 +706,11 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
     }
 
     internal func sendLog(message: String) {
-        if coreLogEnabled {
-            NSLog("[sing-box] %@", message)
-        }
+        // Gate the event emission itself (matching Android's appendLogs), not just
+        // the NSLog side-effect — otherwise JS keeps receiving core logs after the
+        // user disables them.
+        guard coreLogEnabled else { return }
+        NSLog("[sing-box] %@", message)
         sendEvent("onLog", [
             "message": message
         ])
@@ -769,16 +758,4 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
         ])
     }
 
-    // MARK: - Compatibility
-
-    /// Called by TrafficMonitor if service stops externally.
-    internal func handleServiceStopped() {
-        trafficMonitor?.disconnect()
-        trafficMonitor = nil
-        if currentStatus != 0 {
-            updateStatus(0)
-        }
-        NSLog("[ExpoOneBox] Service stopped by external event")
-    }
-    
 }

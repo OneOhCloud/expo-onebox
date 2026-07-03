@@ -64,7 +64,9 @@ struct ConfigFetcher {
                 throw ConfigFetcherError.malformedURL
             }
 
-            let port = UInt16(exactly: components.port ?? (scheme == "https" ? 443 : 80))!
+            guard let port = UInt16(exactly: components.port ?? (scheme == "https" ? 443 : 80)) else {
+                throw ConfigFetcherError.malformedURL
+            }
 
             var requestPath = components.percentEncodedPath
             if requestPath.isEmpty { requestPath = "/" }
@@ -86,14 +88,14 @@ struct ConfigFetcher {
                 }
             }
 
-            let result = try await performRequest(
+            let result = try await performRequest(RequestSpec(
                 host:          host,
                 connectTarget: connectTarget,
                 port:          port,
                 path:          requestPath,
                 useTLS:        scheme == "https",
                 userAgent:     userAgent
-            )
+            ))
 
             // Follow standard 3xx redirects (301, 302, 303, 307, 308).
             // Config URLs frequently redirect, and silently returning a
@@ -114,35 +116,45 @@ struct ConfigFetcher {
 
     // MARK: - NWConnection HTTP(S) Request
 
+    /// Parameters for a single HTTP(S) request over NWConnection.
+    private struct RequestSpec {
+        let host:          String   // original hostname (Host header + TLS SNI)
+        let connectTarget: String   // resolved IP or hostname to dial
+        let port:          UInt16
+        let path:          String
+        let useTLS:        Bool
+        let userAgent:     String
+    }
+
+    /// Builds NWParameters, injecting the TLS SNI when the request is HTTPS.
+    ///
+    /// TLS options are created explicitly so SNI injection is guaranteed.
+    /// NWParameters.tls is a factory property (new instance each access), and
+    /// casting applicationProtocols.first to NWProtocolTLS.Options fails silently
+    /// on some iOS versions — leaving SNI unset and causing cert trust failure
+    /// when connectTarget is a bare IP address.
+    private static func makeParameters(useTLS: Bool, sni host: String) -> NWParameters {
+        guard useTLS else { return NWParameters.tcp }
+        let tlsOptions = NWProtocolTLS.Options()
+        sec_protocol_options_set_tls_server_name(
+            tlsOptions.securityProtocolOptions, host)
+        return NWParameters(tls: tlsOptions)
+    }
+
     /// Makes an HTTP/1.1 request over NWConnection.
     ///
-    /// When `useTLS` is true the TLS SNI is explicitly set to `host`, so the
+    /// When the request is HTTPS the TLS SNI is explicitly set to `host`, so the
     /// server selects the correct certificate even when `connectTarget` is a bare
     /// IP address.  Full system trust evaluation applies — no manual SecTrust
     /// overrides needed.
-    private static func performRequest(
-        host:          String,   // original hostname (Host header + TLS SNI)
-        connectTarget: String,   // resolved IP or hostname to dial
-        port:          UInt16,
-        path:          String,
-        useTLS:        Bool,
-        userAgent:     String
-    ) async throws -> ConfigFetchResult {
+    private static func performRequest(_ spec: RequestSpec) async throws -> ConfigFetchResult {
+        let host          = spec.host
+        let connectTarget = spec.connectTarget
+        let port          = spec.port
+        let path          = spec.path
+        let userAgent     = spec.userAgent
 
-        let parameters: NWParameters
-        if useTLS {
-            // Explicitly create TLS options so SNI injection is guaranteed.
-            // NWParameters.tls is a factory property (new instance each access), and
-            // casting applicationProtocols.first to NWProtocolTLS.Options fails silently
-            // on some iOS versions — leaving SNI unset and causing cert trust failure
-            // when connectTarget is a bare IP address.
-            let tlsOptions = NWProtocolTLS.Options()
-            sec_protocol_options_set_tls_server_name(
-                tlsOptions.securityProtocolOptions, host)
-            parameters = NWParameters(tls: tlsOptions)
-        } else {
-            parameters = NWParameters.tcp
-        }
+        let parameters = makeParameters(useTLS: spec.useTLS, sni: host)
 
         let conn = NWConnection(
             host: NWEndpoint.Host(connectTarget),
@@ -153,7 +165,8 @@ struct ConfigFetcher {
         // mutations happen here — no additional locking required inside callbacks.
         let queue = DispatchQueue(label: "com.onebox.sub-fetch", qos: .userInitiated)
 
-        return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<ConfigFetchResult, Error>) in
+        return try await withTaskCancellationHandler {
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<ConfigFetchResult, Error>) in
 
             // ── Finish helper ─────────────────────────────────────────────────
             // Called from the serial `queue` (callbacks) or the global timeout.
@@ -283,7 +296,11 @@ struct ConfigFetcher {
                         receiveMore()
                     })
                 case .failed(let err): finish(.failure(err))
-                case .cancelled:       break   // already handled by finish()
+                // External cancel (Task cancellation via onCancel) lands here with
+                // finished == false → resume with CancellationError. The normal
+                // path's own conn.cancel() also lands here but finds finished ==
+                // true, so it is a guarded no-op (no double-resume).
+                case .cancelled:       finish(.failure(CancellationError()))
                 default:               break
                 }
             }
@@ -299,6 +316,11 @@ struct ConfigFetcher {
             DispatchQueue.global().asyncAfter(deadline: .now() + 30) {
                 finish(.failure(ConfigFetcherError.timeout))
             }
+        }
+        } onCancel: {
+            // BGTask expiry (or any Task cancellation) aborts the in-flight
+            // NWConnection immediately, instead of waiting out the 30 s timeout.
+            conn.cancel()
         }
     }
 
@@ -336,16 +358,12 @@ struct ConfigFetcher {
         let query = buildAQuery(for: hostname, transactionID: txID)
 
         return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<String, Error>) in
-            var resumed = false
-            let lock = NSLock()
+            let once = ResumeOnce(continuation)
 
             DispatchQueue.global(qos: .userInitiated).async {
                 let fd = socket(AF_INET, SOCK_DGRAM, 0)
                 guard fd > 0 else {
-                    lock.withLock {
-                        guard !resumed else { return }; resumed = true
-                        continuation.resume(throwing: ConfigFetcherError.dnsResolutionFailed("socket() failed"))
-                    }
+                    once.resume(throwing: ConfigFetcherError.dnsResolutionFailed("socket() failed"))
                     return
                 }
                 defer { close(fd) }
@@ -357,10 +375,7 @@ struct ConfigFetcher {
                 addr.sin_family = sa_family_t(AF_INET)
                 addr.sin_port   = UInt16(53).bigEndian
                 guard inet_pton(AF_INET, dnsServer, &addr.sin_addr) == 1 else {
-                    lock.withLock {
-                        guard !resumed else { return }; resumed = true
-                        continuation.resume(throwing: ConfigFetcherError.dnsResolutionFailed("Invalid server: \(dnsServer)"))
-                    }
+                    once.resume(throwing: ConfigFetcherError.dnsResolutionFailed("Invalid server: \(dnsServer)"))
                     return
                 }
 
@@ -374,38 +389,32 @@ struct ConfigFetcher {
                     }
                 }
                 guard sent > 0 else {
-                    lock.withLock {
-                        guard !resumed else { return }; resumed = true
-                        continuation.resume(throwing: ConfigFetcherError.dnsResolutionFailed("sendto() failed"))
-                    }
+                    once.resume(throwing: ConfigFetcherError.dnsResolutionFailed("sendto() failed"))
                     return
                 }
 
                 var buf = [UInt8](repeating: 0, count: 4096)
                 let n   = recv(fd, &buf, buf.count, 0)
 
-                lock.withLock {
-                    guard !resumed else { return }; resumed = true
-                    guard n >= 12 else {
-                        continuation.resume(throwing: ConfigFetcherError.malformedDNSResponse); return
-                    }
-                    let respID = (UInt16(buf[0]) << 8) | UInt16(buf[1])
-                    guard respID == txID else {
-                        continuation.resume(throwing: ConfigFetcherError.malformedDNSResponse); return
-                    }
-                    guard (buf[2] & 0x80) != 0, (buf[3] & 0x0F) == 0 else {
-                        continuation.resume(throwing: ConfigFetcherError.dnsResolutionFailed("RCODE=\(buf[3] & 0x0F)")); return
-                    }
-                    let ancount = Int((UInt16(buf[6]) << 8) | UInt16(buf[7]))
-                    guard ancount > 0 else {
-                        continuation.resume(throwing: ConfigFetcherError.noARecord); return
-                    }
-                    do {
-                        let ip = try parseFirstARecord(from: buf, length: n, ancount: ancount)
-                        continuation.resume(returning: ip)
-                    } catch {
-                        continuation.resume(throwing: error)
-                    }
+                guard n >= 12 else {
+                    once.resume(throwing: ConfigFetcherError.malformedDNSResponse); return
+                }
+                let respID = (UInt16(buf[0]) << 8) | UInt16(buf[1])
+                guard respID == txID else {
+                    once.resume(throwing: ConfigFetcherError.malformedDNSResponse); return
+                }
+                guard (buf[2] & 0x80) != 0, (buf[3] & 0x0F) == 0 else {
+                    once.resume(throwing: ConfigFetcherError.dnsResolutionFailed("RCODE=\(buf[3] & 0x0F)")); return
+                }
+                let ancount = Int((UInt16(buf[6]) << 8) | UInt16(buf[7]))
+                guard ancount > 0 else {
+                    once.resume(throwing: ConfigFetcherError.noARecord); return
+                }
+                do {
+                    let ip = try parseFirstARecord(from: buf, length: n, ancount: ancount)
+                    once.resume(returning: ip)
+                } catch {
+                    once.resume(throwing: error)
                 }
             }
         }
@@ -471,5 +480,37 @@ struct ConfigFetcher {
     private static func isIPAddress(_ host: String) -> Bool {
         var a4 = in_addr(); var a6 = in6_addr()
         return inet_pton(AF_INET, host, &a4) == 1 || inet_pton(AF_INET6, host, &a6) == 1
+    }
+}
+
+// MARK: - Single-shot continuation guard
+
+/// Resumes a `CheckedContinuation` at most once. Guards the cross-thread paths
+/// (blocking socket callbacks, timeouts) where a continuation could otherwise be
+/// resumed twice — resuming a checked continuation more than once is a crash.
+// Safe to share across threads: `resumed` and the resume call are guarded by
+// `lock`, which is exactly the cross-thread double-resume this type prevents.
+final class ResumeOnce<T>: @unchecked Sendable {
+    private let continuation: CheckedContinuation<T, Error>
+    private let lock = NSLock()
+    private var resumed = false
+
+    init(_ continuation: CheckedContinuation<T, Error>) {
+        self.continuation = continuation
+    }
+
+    func resume(returning value: T) {
+        completeOnce { $0.resume(returning: value) }
+    }
+
+    func resume(throwing error: Error) {
+        completeOnce { $0.resume(throwing: error) }
+    }
+
+    private func completeOnce(_ body: (CheckedContinuation<T, Error>) -> Void) {
+        lock.lock(); defer { lock.unlock() }
+        guard !resumed else { return }
+        resumed = true
+        body(continuation)
     }
 }

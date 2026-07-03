@@ -9,6 +9,7 @@ import android.net.NetworkRequest
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import expo.modules.onebox.oneoh.cloud.ExpoOneBoxModule.Companion.connectivity
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.DelicateCoroutinesApi
@@ -46,6 +47,7 @@ object DefaultNetworkListener {
         var lastLp: LinkProperties? = null
         val pendingRequests = arrayListOf<NetworkMessage.Get>()
         for (message in channel) {
+            try {
             when (message) {
                 is NetworkMessage.Start -> {
                     if (listeners.isEmpty()) register()
@@ -103,21 +105,19 @@ object DefaultNetworkListener {
                     }
                 }
             }
+            } catch (e: Exception) {
+                Log.w("DefaultNetworkListener", "network actor message failed", e)
+                if (message is NetworkMessage.Get) message.response.completeExceptionally(e)
+            }
         }
     }
 
     suspend fun start(key: Any, listener: (Network?) -> Unit) =
         networkActor.send(NetworkMessage.Start(key, listener))
 
-    suspend fun get(): Network = if (fallback) {
-        @TargetApi(23)
-        connectivity.activeNetwork
-            ?: error("missing default network")
-    } else {
-        NetworkMessage.Get().run {
-            networkActor.send(this)
-            response.await()
-        }
+    suspend fun get(): Network = NetworkMessage.Get().run {
+        networkActor.send(this)
+        response.await()
     }
 
     suspend fun stop(key: Any) = networkActor.send(NetworkMessage.Stop(key))
@@ -143,14 +143,9 @@ object DefaultNetworkListener {
         }
     }
 
-    private var fallback = false
     private val request = NetworkRequest.Builder().apply {
         addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
         addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED)
-        if (Build.VERSION.SDK_INT == 23) {
-            removeCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
-            removeCapability(NetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL)
-        }
     }.build()
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -169,12 +164,6 @@ object DefaultNetworkListener {
             }
             in 24 until 26 -> @TargetApi(24) {
                 connectivity.registerDefaultNetworkCallback(Callback)
-            }
-            else -> try {
-                fallback = false
-                connectivity.requestNetwork(request, Callback)
-            } catch (e: RuntimeException) {
-                fallback = true
             }
         }
     }

@@ -1,6 +1,39 @@
 import ExpoModulesCore
 @preconcurrency import Libbox
 
+// MARK: - Shared group-parse helpers
+
+/// Cross-layer group tag contract (see docs/claude/bridge-signature.md).
+/// A single source for these names so a rename does not need N call-site edits.
+let exitGatewayGroupTag = "ExitGateway"
+let autoGroupTag = "auto"
+
+/// Parses a libbox outbound-group iterator into the ExitGateway node list, the
+/// currently-selected ExitGateway node, and the auto group's selection.
+/// Shared by OneShotGroupQueryHandler here and TrafficMonitor.ClientHandler.
+func parseExitGatewayGroups(
+    _ iterator: any LibboxOutboundGroupIteratorProtocol
+) -> (all: [[String: Any]], now: String, autoNow: String) {
+    var all: [[String: Any]] = []
+    var now = ""
+    var autoNow = ""
+    while let group = iterator.next() {
+        if group.tag == exitGatewayGroupTag {
+            now = group.selected
+            if let items = group.getItems() {
+                while let item = items.next() {
+                    all.append(["tag": item.tag, "delay": Int(item.urlTestDelay)])
+                }
+            }
+            continue
+        }
+        if group.tag == autoGroupTag {
+            autoNow = group.selected
+        }
+    }
+    return (all, now, autoNow)
+}
+
 // MARK: - One-shot proxy group query handler
 
 /// Connects to the libbox CommandServer, waits for the first CommandGroup update,
@@ -47,34 +80,20 @@ class OneShotGroupQueryHandler: NSObject, LibboxCommandClientHandlerProtocol, @u
 
     func writeGroups(_ message: (any LibboxOutboundGroupIteratorProtocol)?) {
         guard let message else { return }
-        var all: [[String: Any]] = []
-        var now = ""
-        var autoNow = ""
-        while let group = message.next() {
-            if group.tag == "ExitGateway" {
-                now = group.selected
-                if let items = group.getItems() {
-                    while let item = items.next() {
-                        all.append(["tag": item.tag, "delay": Int(item.urlTestDelay)])
-                    }
-                }
-                continue
-            }
-            if group.tag == "auto" {
-                autoNow = group.selected
-            }
-        }
-        settle(.success(["all": all, "now": now, "autoNow": autoNow]))
+        let groups = parseExitGatewayGroups(message)
+        settle(.success(["all": groups.all, "now": groups.now, "autoNow": groups.autoNow]))
     }
 
-    // Unused callbacks — libbox runtime checks respondsToSelector before calling
-    func writeStatus(_ message: LibboxStatusMessage?) {}
+    // writeLogs forwards sing-box log lines; libbox checks respondsToSelector before calling.
     func writeLogs(_ messageList: (any LibboxLogIteratorProtocol)?) {
         guard let messageList else { return }
         while let msg = messageList.next() {
             NSLog("[sing-box] %@", msg.message)
         }
     }
+
+    // Unused callbacks — no-ops; libbox checks respondsToSelector before calling.
+    func writeStatus(_ message: LibboxStatusMessage?) {}
     func clearLogs() {}
     func setDefaultLogLevel(_ level: Int32) {}
     func initializeClashMode(_ modeList: (any LibboxStringIteratorProtocol)?, currentMode: String?) {}

@@ -32,14 +32,11 @@ internal fun processConfig(config: String, context: Context): String {
                 cacheFile.put("enabled", true)
                 Log.i(TAG, "workingDir: $workingDir")
                 Log.i(TAG, "config[experimental] cachePath: $cachePath")
-
-                val cacheDirectory = File("$workingDir/cache")
-                if (!cacheDirectory.exists()) {
-                    cacheDirectory.mkdirs()
-                }
             }
         }
-        Log.i(TAG, "config: $json")
+        // Do NOT log the processed config — it contains user profile data
+        // (server hostnames, passwords/UUIDs). See config-fetch-policy.md
+        // log-redaction contract.
         json.toString()
     } catch (e: Exception) {
         Log.w(TAG, "Failed to process config", e)
@@ -47,16 +44,3 @@ internal fun processConfig(config: String, context: Context): String {
     }
 }
 
-/**
- * 从配置中移除 TUN 类型的 inbound（保留 mixed 等其他 inbound）。
- * 目前仅做 JSON 转换，预留后续扩展点。
- */
-internal fun removeTunInbound(config: String): String {
-    return try {
-        val json = JSONObject(config)
-        json.toString()
-    } catch (e: Exception) {
-        Log.w(TAG, "Failed to remove TUN inbound", e)
-        config
-    }
-}

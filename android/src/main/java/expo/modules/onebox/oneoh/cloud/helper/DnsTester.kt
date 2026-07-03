@@ -119,23 +119,14 @@ private suspend fun testDnsServer(dnsServer: String, globalStart: Long): Pair<St
     }
 }
 
+private const val PROBE_TX_ID: Short = 0x1234
+private const val PROBE_HOSTNAME = "www.baidu.com"
+
 private suspend fun performDnsQuery(dnsServer: String) {
     withContext(Dispatchers.IO) {
-        // DNS query packet for www.baidu.com (type A)
-        val queryData = byteArrayOf(
-            0x12, 0x34,  // Transaction ID
-            0x01, 0x00,  // Standard query
-            0x00, 0x01,  // Questions: 1
-            0x00, 0x00,  // Answer RRs: 0
-            0x00, 0x00,  // Authority RRs: 0
-            0x00, 0x00,  // Additional RRs: 0
-            3, 'w'.code.toByte(), 'w'.code.toByte(), 'w'.code.toByte(),
-            5, 'b'.code.toByte(), 'a'.code.toByte(), 'i'.code.toByte(), 'd'.code.toByte(), 'u'.code.toByte(),
-            3, 'c'.code.toByte(), 'o'.code.toByte(), 'm'.code.toByte(),
-            0,           // null terminator
-            0x00, 0x01,  // Type A
-            0x00, 0x01   // Class IN
-        )
+        // Reuse ConfigFetcher.buildAQuery so the probe packet has a single source
+        // (was a second hardcoded byte-array implementation).
+        val queryData = buildAQuery(PROBE_HOSTNAME, PROBE_TX_ID)
 
         java.net.DatagramSocket().use { udpSocket ->
             udpSocket.soTimeout = 500  // 唯一的超时控制点，不依赖协程层 timeout

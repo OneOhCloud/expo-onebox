@@ -5,6 +5,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
@@ -32,6 +33,19 @@ data class ConfigFetchResult(
     val headers: Map<String, String>,
     val body: String,
 )
+
+/** Map an OkHttp response into the transport-neutral result (lower-cased headers, first value wins). */
+private fun Response.toConfigFetchResult(): ConfigFetchResult {
+    val flatHeaders = mutableMapOf<String, String>()
+    for (name in headers.names()) {
+        headers(name).firstOrNull()?.let { flatHeaders[name.lowercase()] = it }
+    }
+    return ConfigFetchResult(
+        statusCode = code,
+        headers = flatHeaders,
+        body = body?.string() ?: "",
+    )
+}
 
 // MARK: - SNI-overriding SSLSocketFactory
 // When connecting to an IP address, TLS would fail because the server certificate
@@ -122,7 +136,9 @@ internal suspend fun fetchConfig(url: String, userAgent: String): ConfigFetchRes
         return fetchDirect(url, userAgent)
     }
 
-    Log.i(TAG, "Resolved host(sha8=${hostHash8(originalHost)}) → $resolvedIP via $bestDns")
+    // Log the hashed host only — the resolved IP is user profile data and must
+    // not be written in plaintext (it would defeat the hostHash8 masking).
+    Log.i(TAG, "Resolved host(sha8=${hostHash8(originalHost)}) via $bestDns")
 
     // Replace host with resolved IP, keep scheme/port/path/query
     val port = parsedUri.port.let { if (it == -1) "" else ":$it" }
@@ -163,17 +179,7 @@ internal suspend fun fetchConfig(url: String, userAgent: String): ConfigFetchRes
         .build()
 
     return withContext(Dispatchers.IO) {
-        client.newCall(request).execute().use { response ->
-            val headers = mutableMapOf<String, String>()
-            for (name in response.headers.names()) {
-                response.headers(name).firstOrNull()?.let { headers[name.lowercase()] = it }
-            }
-            ConfigFetchResult(
-                statusCode = response.code,
-                headers = headers,
-                body = response.body?.string() ?: "",
-            )
-        }
+        client.newCall(request).execute().use { it.toConfigFetchResult() }
     }
 }
 
@@ -198,7 +204,7 @@ internal suspend fun resolveHostname(hostname: String, dnsServer: String): Strin
     }
 }
 
-private fun buildAQuery(hostname: String, txID: Short): ByteArray {
+internal fun buildAQuery(hostname: String, txID: Short): ByteArray {
     val labels = hostname.split(".")
     val qname = mutableListOf<Byte>()
     for (label in labels) {
@@ -270,16 +276,13 @@ private fun parseFirstARecord(buf: ByteArray, length: Int, txID: Short): String 
 
 // MARK: - Helpers
 
+// Pure format check — no DNS resolution. A literal IP is either dotted-quad
+// IPv4 or contains ':' (IPv6). Anything else is a hostname to resolve.
 private fun isIPAddress(host: String): Boolean {
-    return try {
-        InetAddress.getByName(host) // throws if unparseable — but also resolves, so check format
-        // Simpler: regex check for IPv4 or IPv6 literal
-        host.matches(Regex("^(\\d{1,3}\\.){3}\\d{1,3}$")) ||
-                host.contains(":")  // IPv6
-    } catch (_: Exception) { false }
+    return host.matches(Regex("^(\\d{1,3}\\.){3}\\d{1,3}$")) || host.contains(":")
 }
 
-private fun fetchDirect(url: String, userAgent: String): ConfigFetchResult {
+private suspend fun fetchDirect(url: String, userAgent: String): ConfigFetchResult {
     val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
@@ -292,15 +295,7 @@ private fun fetchDirect(url: String, userAgent: String): ConfigFetchResult {
         .header("Accept", "application/json, */*")
         .get()
         .build()
-    client.newCall(request).execute().use { response ->
-        val headers = mutableMapOf<String, String>()
-        for (name in response.headers.names()) {
-            response.headers(name).firstOrNull()?.let { headers[name.lowercase()] = it }
-        }
-        return ConfigFetchResult(
-            statusCode = response.code,
-            headers = headers,
-            body = response.body?.string() ?: "",
-        )
+    return withContext(Dispatchers.IO) {
+        client.newCall(request).execute().use { it.toConfigFetchResult() }
     }
 }
