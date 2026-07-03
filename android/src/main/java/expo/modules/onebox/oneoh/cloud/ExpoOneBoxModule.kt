@@ -576,9 +576,9 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
 
             val statusName = when (status) {
                 Status.Stopped -> "stopped"
-                Status.Starting -> "connecting"
-                Status.Started -> "connected"
-                Status.Stopping -> "disconnecting"
+                Status.Starting -> "starting"
+                Status.Started -> "started"
+                Status.Stopping -> "stopping"
             }
 
             when (status) {

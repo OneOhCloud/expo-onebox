@@ -1,5 +1,9 @@
 // VPN 连接状态
-export type VpnStatus = 'stopped' | 'connecting' | 'connected' | 'disconnecting' | 'unknown';
+// Status-name vocabulary matches the numeric VPN_STATUS family (stopped=0,
+// starting=1, started=2, stopping=3), rather than a separate connect-family, so
+// the string and code describe the same lifecycle (audit C20). Diagnostic/log
+// use only — no logic branches on these strings.
+export type VpnStatus = 'stopped' | 'starting' | 'started' | 'stopping' | 'unknown';
 
 // 状态码常量
 export const VPN_STATUS = {

@@ -108,7 +108,7 @@ class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
     this._status = VPN_STATUS.STARTING;
     this.emit('onStatusChange', {
       status: VPN_STATUS.STARTING,
-      statusName: 'connecting',
+      statusName: 'starting',
       message: 'VPN connecting (mock)',
     });
 
@@ -119,7 +119,7 @@ class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
     this._downlinkTotal = 0;
     this.emit('onStatusChange', {
       status: VPN_STATUS.STARTED,
-      statusName: 'connected',
+      statusName: 'started',
       message: 'VPN connected (mock)',
     });
 
@@ -156,7 +156,7 @@ class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
     this._status = VPN_STATUS.STOPPING;
     this.emit('onStatusChange', {
       status: VPN_STATUS.STOPPING,
-      statusName: 'disconnecting',
+      statusName: 'stopping',
       message: 'VPN disconnecting (mock)',
     });
 

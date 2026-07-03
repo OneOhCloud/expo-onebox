@@ -639,9 +639,9 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
         let statusName: String
         switch status {
         case 0: statusName = "stopped"
-        case 1: statusName = "connecting"
-        case 2: statusName = "connected"
-        case 3: statusName = "disconnecting"
+        case 1: statusName = "starting"
+        case 2: statusName = "started"
+        case 3: statusName = "stopping"
         default: statusName = "unknown"
         }
 
