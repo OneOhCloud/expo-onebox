@@ -34,6 +34,9 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
     /// Set to true when user initiates start, cleared on connected or disconnected.
     /// Used to detect startup failures even when NEVPNStatus goes connecting→disconnecting→disconnected.
     @Guarded private var isStartingUp: Bool = false
+    /// Set when the user asks to stop, so an unexpected tunnel drop (crash) can be
+    /// told apart from a clean stop in the .disconnected handler (audit D4-06).
+    @Guarded private var userInitiatedStop: Bool = false
     private var lastStartConfig: String = ""
     private var isInitialized = false
     private var statusObserver: NSObjectProtocol?
@@ -478,6 +481,7 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
         try await manager.loadFromPreferences()
 
         isStartingUp = true
+        userInitiatedStop = false
         updateStatus(1) // Starting
 
         // Rewrite experimental.cache_file.path to the correct absolute path
@@ -501,6 +505,7 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
     }
 
     private func stopVPN() async {
+        userInitiatedStop = true
         guard let manager = vpnManager else {
             updateStatus(0)
             return
@@ -580,7 +585,22 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
                         self.sendError(type: "StartServiceFailed", message: "START_FAILED_GENERIC", source: "binary")
                     }
                 }
+            } else if !userInitiatedStop {
+                // The tunnel dropped after a successful start without a user-initiated
+                // stop — surface it so the failure is observable, not just the startup
+                // window (audit D4-06). A crash writes stderr rather than
+                // startup_error, so report even when the startup file is empty.
+                // iOS-device runtime verification pending — NE VPN does not run in the
+                // simulator.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                    guard let self else { return }
+                    let errMsg = self.readStartupError()
+                    self.sendError(type: "UnexpectedDisconnect",
+                                   message: errMsg.isEmpty ? "TUNNEL_DISCONNECTED_UNEXPECTEDLY" : errMsg,
+                                   source: "binary")
+                }
             }
+            userInitiatedStop = false
         case .connecting:
             updateStatus(1)
         case .connected:
