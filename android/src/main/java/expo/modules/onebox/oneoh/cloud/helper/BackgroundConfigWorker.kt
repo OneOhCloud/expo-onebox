@@ -329,7 +329,7 @@ private fun readAccelerateUrl(context: Context): String? {
 
 // MARK: - Fallback preflight (shared by both fetch executors)
 
-private data class FallbackPreflight(
+internal data class FallbackPreflight(
     val host: String,
     val domainSha: String,
     val verified: Boolean,
@@ -378,48 +378,78 @@ private suspend fun prepareFallbackPreflight(
  *
  * Cancellation is rethrown — it must never trigger accelerator fallback.
  */
+/** Outcome of the shared [fetchWithFallback] control flow (audit D3c-01 / C4). */
+internal sealed class FallbackOutcome {
+    /** A primary result (any HTTP status) or a successful accelerated fetch. */
+    data class Ok(
+        val result: ConfigFetchResult,
+        val method: String,        // "primary" | "fallback"
+        val actualUrl: String,
+        val primaryError: String? = null, // set when method == "fallback"
+    ) : FallbackOutcome()
+    /** The primary threw a network error and fallback was skipped. */
+    data class NoFallback(val primaryError: String, val reason: String) : FallbackOutcome() // "unverified" | "no-accelerator"
+    /** The primary threw and the accelerated fetch also threw. */
+    data class BothFailed(val primaryError: String, val accError: String, val accUrl: String) : FallbackOutcome()
+}
+
+/**
+ * The primary → gate → accelerator control flow, extracted so the foreground
+ * [fetchProfileConfigWithFallback] and the background [executeRefreshWith] share
+ * one copy instead of two (audit D3c-01 / C4). [fetch] and [log] are injected so
+ * the decision is pure and JVM-testable (see `FetchWithFallbackTest`): the outcome
+ * depends only on [preflight] and the [fetch] results. HTTP errors return as the
+ * primary Ok (non-2xx never falls back); only a network throw runs the gate;
+ * cancellation is always rethrown. The decision table is golden-locked in
+ * `golden/fetch-fallback-decision.json`.
+ */
+internal suspend fun fetchWithFallback(
+    preflight: FallbackPreflight,
+    url: String,
+    userAgent: String,
+    fetch: suspend (String, String) -> ConfigFetchResult = ::fetchConfig,
+    log: (String) -> Unit = { Log.i(TAG, it) },
+    buildAccelUrl: (String, String) -> String = ::buildAcceleratedUrl,
+): FallbackOutcome {
+    val primaryError: String = try {
+        if (preflight.testPrimaryUnavailable) {
+            log("[CONFIG_LOAD] 测试模式: 主URL主动抛出异常")
+            throwPrimaryUnavailableForTest()
+        }
+        // HTTP errors (non-2xx) do not trigger fallback — return the response as-is.
+        return FallbackOutcome.Ok(fetch(url, userAgent), "primary", url)
+    } catch (ce: CancellationException) {
+        throw ce
+    } catch (primaryEx: Exception) {
+        val err = primaryEx.message ?: "Unknown error"
+        log("[CONFIG_LOAD] 主URL异常: $err, 检查回落条件")
+        err
+    }
+
+    if (!preflight.verified) return FallbackOutcome.NoFallback(primaryError, "unverified")
+    if (preflight.accelerateUrl.isNullOrBlank()) return FallbackOutcome.NoFallback(primaryError, "no-accelerator")
+
+    val accUrl = buildAccelUrl(url, preflight.accelerateUrl)
+    log("[CONFIG_LOAD] 主URL失败, 尝试加速回落: ${summarizeAccelerateUrl(accUrl)}, 原因: $primaryError")
+    return try {
+        FallbackOutcome.Ok(fetch(accUrl, userAgent), "fallback", accUrl, primaryError)
+    } catch (ce: CancellationException) {
+        throw ce
+    } catch (accEx: Exception) {
+        FallbackOutcome.BothFailed(primaryError, accEx.message ?: "Unknown error", accUrl)
+    }
+}
+
 internal suspend fun fetchProfileConfigWithFallback(
     context: Context,
     url: String,
     userAgent: String,
 ): ConfigFetchResult {
     val preflight = prepareFallbackPreflight(context, url, "fetchProfileConfig")
-    val verified               = preflight.verified
-    val testPrimaryUnavailable = preflight.testPrimaryUnavailable
-    val accelerateUrl          = preflight.accelerateUrl
-
-    val primaryError: String = try {
-        if (testPrimaryUnavailable) {
-            Log.w(TAG, "[CONFIG_LOAD] 测试模式: 主URL主动抛出异常")
-            throwPrimaryUnavailableForTest()
-        }
-        val primary = fetchConfig(url, userAgent)
-        // HTTP errors (non-2xx) do not trigger fallback — return the response as-is.
-        return primary
-    } catch (ce: CancellationException) {
-        throw ce
-    } catch (primaryEx: Exception) {
-        val err = primaryEx.message ?: "Unknown error"
-        Log.w(TAG, "[CONFIG_LOAD] 主URL异常: $err, 检查回落条件")
-        err
-    }
-
-    if (!verified) {
-        throw IllegalStateException(primaryError)
-    }
-    if (accelerateUrl.isNullOrBlank()) {
-        throw IllegalStateException(primaryError)
-    }
-
-    val accUrl = buildAcceleratedUrl(url, accelerateUrl)
-    Log.i(TAG, "[CONFIG_LOAD] 主URL失败, 尝试加速回落: ${summarizeAccelerateUrl(accUrl)}, 原因: $primaryError")
-    return try {
-        fetchConfig(accUrl, userAgent)
-    } catch (ce: CancellationException) {
-        throw ce
-    } catch (accEx: Exception) {
-        val accError = accEx.message ?: "Unknown error"
-        throw IllegalStateException("primary=$primaryError accelerated=$accError")
+    return when (val o = fetchWithFallback(preflight, url, userAgent)) {
+        is FallbackOutcome.Ok         -> o.result
+        is FallbackOutcome.NoFallback -> throw IllegalStateException(o.primaryError)
+        is FallbackOutcome.BothFailed -> throw IllegalStateException("primary=${o.primaryError} accelerated=${o.accError}")
     }
 }
 
@@ -442,134 +472,102 @@ internal suspend fun executeRefreshWith(
 ): ConfigRefreshResult {
     val start     = System.currentTimeMillis()
     val timestamp = Instant.now().toString()
-
-    // ── Domain verification ───────────────────────────────────────────────────
     val preflight = prepareFallbackPreflight(context, url, "executeRefresh")
-    val domainSha              = preflight.domainSha
-    val verified               = preflight.verified
-    val testPrimaryUnavailable = preflight.testPrimaryUnavailable
-    val accelerateUrl          = preflight.accelerateUrl
 
-    // ── Try primary URL first ────────────────────────────────────────────────
-    val primaryError: String = try {
-        if (testPrimaryUnavailable) {
-            Log.w(TAG, "[CONFIG_LOAD] 测试模式: 主URL主动抛出异常")
-            throwPrimaryUnavailableForTest()
+    // The primary → gate → accelerator control flow is shared with
+    // fetchProfileConfigWithFallback (audit D3c-01); this only interprets the
+    // outcome into a ConfigRefreshResult + CONFIG_LOAD diagnostics.
+    return when (val o = fetchWithFallback(preflight, url, userAgent)) {
+        is FallbackOutcome.Ok -> {
+            val durationMs  = System.currentTimeMillis() - start
+            val ok2xx       = o.result.statusCode in 200..299
+            val headerValue = o.result.headers["subscription-userinfo"]
+            when {
+                o.method == "primary" && !ok2xx -> {
+                    Log.w(TAG, "[CONFIG_LOAD] 方式=HTTP_ERROR_NO_FALLBACK, HTTP ${o.result.statusCode}, 不触发回落")
+                    ConfigRefreshResult(
+                        status    = "failed",
+                        error     = "HTTP ${o.result.statusCode}",
+                        timestamp = timestamp,
+                        durationMs = durationMs,
+                        method    = "primary",
+                    )
+                }
+                o.method == "primary" -> {
+                    val info = parseUserinfo(headerValue)
+                    Log.i(TAG, "[CONFIG_LOAD] 方式=PRIMARY, 上传=${info.upload}, 下载=${info.download}, 总计=${info.total}, 过期=${info.expire}")
+                    ConfigRefreshResult(
+                        status             = "success",
+                        content            = o.result.body,
+                        profileUpload   = info.upload,
+                        profileDownload = info.download,
+                        profileTotal    = info.total,
+                        profileExpire   = info.expire,
+                        timestamp          = timestamp,
+                        durationMs         = durationMs,
+                        profileUserinfoHeader = headerValue,
+                        method             = "primary",
+                    )
+                }
+                !ok2xx -> {
+                    // Accelerated fetch returned an HTTP error → both failed.
+                    val accError = "HTTP ${o.result.statusCode}"
+                    Log.e(TAG, "[CONFIG_LOAD] 方式=BOTH_FAILED, 加速原因=$accError, 主URL原因=${o.primaryError}")
+                    ConfigRefreshResult(
+                        status    = "failed",
+                        error     = "primary=${o.primaryError} accelerated=$accError",
+                        timestamp = timestamp,
+                        durationMs = durationMs,
+                        method    = "fallback",
+                        actualUrl = o.actualUrl,
+                    )
+                }
+                else -> {
+                    val info = parseUserinfo(headerValue)
+                    Log.i(TAG, "[CONFIG_LOAD] 方式=FALLBACK_ACCELERATOR, 上传=${info.upload}, 下载=${info.download}, 总计=${info.total}, 过期=${info.expire}")
+                    ConfigRefreshResult(
+                        status             = "success",
+                        content            = o.result.body,
+                        profileUpload   = info.upload,
+                        profileDownload = info.download,
+                        profileTotal    = info.total,
+                        profileExpire   = info.expire,
+                        timestamp          = timestamp,
+                        durationMs         = durationMs,
+                        profileUserinfoHeader = headerValue,
+                        method             = "fallback",
+                        actualUrl          = o.actualUrl,
+                    )
+                }
+            }
         }
-        val fetchResult = fetchConfig(url, userAgent)
-        val durationMs  = System.currentTimeMillis() - start
-
-        if (fetchResult.statusCode < 200 || fetchResult.statusCode >= 300) {
-            // HTTP error — do not fall back, return error
-            Log.w(TAG, "[CONFIG_LOAD] 方式=HTTP_ERROR_NO_FALLBACK, HTTP ${fetchResult.statusCode}, 不触发回落")
-            return ConfigRefreshResult(
+        is FallbackOutcome.NoFallback -> {
+            val durationMs = System.currentTimeMillis() - start
+            if (o.reason == "unverified") {
+                Log.w(TAG, "[CONFIG_LOAD] 方式=ACCELERATOR_SKIPPED, 原因=域名未验证 (SHA256=${preflight.domainSha}), 主URL原因: ${o.primaryError}")
+            } else {
+                Log.w(TAG, "[CONFIG_LOAD] 方式=ACCELERATOR_UNAVAILABLE, 原因=加速URL未配置, 主URL原因: ${o.primaryError}")
+            }
+            ConfigRefreshResult(
                 status    = "failed",
-                error     = "HTTP ${fetchResult.statusCode}",
+                error     = o.primaryError,
                 timestamp = timestamp,
                 durationMs = durationMs,
                 method    = "primary",
             )
         }
-
-        val headerValue = fetchResult.headers["subscription-userinfo"]
-        val info = parseUserinfo(headerValue)
-        Log.i(TAG, "[CONFIG_LOAD] 方式=PRIMARY, 上传=${info.upload}, 下载=${info.download}, 总计=${info.total}, 过期=${info.expire}")
-        return ConfigRefreshResult(
-            status             = "success",
-            content            = fetchResult.body,
-            profileUpload   = info.upload,
-            profileDownload = info.download,
-            profileTotal    = info.total,
-            profileExpire   = info.expire,
-            timestamp          = timestamp,
-            durationMs         = durationMs,
-            profileUserinfoHeader = headerValue,
-            method             = "primary",
-        )
-    } catch (ce: CancellationException) {
-        throw ce
-    } catch (primaryEx: Exception) {
-        val err = primaryEx.message ?: "Unknown error"
-        Log.w(TAG, "[CONFIG_LOAD] 主URL异常: $err, 检查回落条件")
-        err
-    }
-
-    // ── Try accelerated URL (verified domains only) ───────────────────────
-    // This code executes when either test mode is enabled or primary fetch failed
-    if (!verified) {
-        val durationMs = System.currentTimeMillis() - start
-        Log.w(TAG, "[CONFIG_LOAD] 方式=ACCELERATOR_SKIPPED, 原因=域名未验证 (SHA256=$domainSha), 主URL原因: $primaryError")
-        return ConfigRefreshResult(
-            status    = "failed",
-            error     = primaryError,
-            timestamp = timestamp,
-            durationMs = durationMs,
-            method    = "primary",
-        )
-    }
-
-    if (accelerateUrl.isNullOrBlank()) {
-        val durationMs = System.currentTimeMillis() - start
-        Log.w(TAG, "[CONFIG_LOAD] 方式=ACCELERATOR_UNAVAILABLE, 原因=加速URL未配置, 主URL原因: $primaryError")
-        return ConfigRefreshResult(
-            status    = "failed",
-            error     = primaryError,
-            timestamp = timestamp,
-            durationMs = durationMs,
-            method    = "primary",
-        )
-    }
-
-    val accUrl = buildAcceleratedUrl(url, accelerateUrl)
-    Log.i(TAG, "[CONFIG_LOAD] 主URL失败, 尝试加速回落: ${summarizeAccelerateUrl(accUrl)}, 原因: $primaryError")
-
-    return try {
-        val fetchResult = fetchConfig(accUrl, userAgent)
-        val durationMs  = System.currentTimeMillis() - start
-
-        if (fetchResult.statusCode < 200 || fetchResult.statusCode >= 300) {
-            val accError = "HTTP ${fetchResult.statusCode}"
-            Log.e(TAG, "[CONFIG_LOAD] 方式=BOTH_FAILED, 加速原因=$accError, 主URL原因=$primaryError")
+        is FallbackOutcome.BothFailed -> {
+            val durationMs = System.currentTimeMillis() - start
+            Log.e(TAG, "[CONFIG_LOAD] 方式=BOTH_FAILED, 加速原因=${o.accError}, 主URL原因=${o.primaryError}")
             ConfigRefreshResult(
                 status    = "failed",
-                error     = "primary=$primaryError accelerated=$accError",
+                error     = "primary=${o.primaryError} accelerated=${o.accError}",
                 timestamp = timestamp,
                 durationMs = durationMs,
                 method    = "fallback",
-                actualUrl = accUrl,
-            )
-        } else {
-            val headerValue = fetchResult.headers["subscription-userinfo"]
-            val info = parseUserinfo(headerValue)
-            Log.i(TAG, "[CONFIG_LOAD] 方式=FALLBACK_ACCELERATOR, 上传=${info.upload}, 下载=${info.download}, 总计=${info.total}, 过期=${info.expire}")
-            ConfigRefreshResult(
-                status             = "success",
-                content            = fetchResult.body,
-                profileUpload   = info.upload,
-                profileDownload = info.download,
-                profileTotal    = info.total,
-                profileExpire   = info.expire,
-                timestamp          = timestamp,
-                durationMs         = durationMs,
-                profileUserinfoHeader = headerValue,
-                method             = "fallback",
-                actualUrl          = accUrl,
+                actualUrl = o.accUrl,
             )
         }
-    } catch (ce: CancellationException) {
-        throw ce
-    } catch (accEx: Exception) {
-        val durationMs = System.currentTimeMillis() - start
-        val accError   = accEx.message ?: "Unknown error"
-        Log.e(TAG, "[CONFIG_LOAD] 方式=BOTH_FAILED, 加速原因=$accError, 主URL原因=$primaryError")
-        ConfigRefreshResult(
-            status    = "failed",
-            error     = "primary=$primaryError accelerated=$accError",
-            timestamp = timestamp,
-            durationMs = durationMs,
-            method    = "fallback",
-            actualUrl = accUrl,
-        )
     }
 }
 
