@@ -1,0 +1,23 @@
+{
+  "_doc": "Cross-platform golden samples for the DNS A-record response parser (audit C7 / D3c-04). Kotlin (ConfigFetcher.kt parseFirstARecord) and Swift (core/DnsParse.swift parseFirstARecord) walk the same raw DNS response bytes and must extract the same first A-record IPv4. No JS implementation (JS resolves via expo/fetch). Fixtures are happy-path responses (rcode=0, txID matches, >=1 answer); each runner supplies the header-derived args its signature needs (Swift: ancount from bytes 6-7; Kotlin: txID). responseHex is the full UDP DNS response.",
+  "cases": [
+    {
+      "name": "single A record (compression-pointer name)",
+      "txID": 4660,
+      "expect": "93.184.216.34",
+      "responseHex": "123481800001000100000000076578616d706c6503636f6d0000010001c00c000100010000012c00045db8d822"
+    },
+    {
+      "name": "CNAME answer skipped, A record returned",
+      "txID": 22136,
+      "expect": "203.0.113.7",
+      "responseHex": "56788180000100020000000003777777076578616d706c65036f72670000010001c00c000500010000012c000d076578616d706c65036f726700076578616d706c65036f726700000100010000012c0004cb007107"
+    },
+    {
+      "name": "answer with full (non-compressed) name",
+      "txID": 1,
+      "expect": "10.0.0.1",
+      "responseHex": "0001818000010001000000000161047465737400000100010161047465737400000100010000012c00040a000001"
+    }
+  ]
+}

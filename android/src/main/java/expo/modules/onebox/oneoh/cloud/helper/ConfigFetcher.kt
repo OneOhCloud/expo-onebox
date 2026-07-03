@@ -220,7 +220,7 @@ internal fun buildAQuery(hostname: String, txID: Short): ByteArray {
     }.toByteArray()
 }
 
-private fun parseFirstARecord(buf: ByteArray, length: Int, txID: Short): String {
+internal fun parseFirstARecord(buf: ByteArray, length: Int, txID: Short): String {
     if (length < 12) throw IllegalStateException("DNS response too short")
 
     val responseID = ((buf[0].toInt() and 0xFF) shl 8) or (buf[1].toInt() and 0xFF)
