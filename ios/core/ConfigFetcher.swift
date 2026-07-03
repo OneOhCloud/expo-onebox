@@ -324,28 +324,10 @@ struct ConfigFetcher {
 
     // MARK: - Chunked Transfer Encoding Decoder
 
+    // Chunked-transfer decoding lives in the framework-free HttpChunked so it can
+    // be golden-tested off-device (audit D3c-08).
     private static func decodeChunked(_ data: Data) -> Data {
-        var result = Data()
-        var offset = 0
-        let crlf   = Data([0x0D, 0x0A])
-
-        while offset < data.count {
-            guard let eol = data.range(of: crlf, in: offset ..< data.count) else { break }
-            let sizeLine = String(data: data[offset ..< eol.lowerBound], encoding: .utf8) ?? ""
-            // Strip chunk extensions (e.g. "1a; ext=foo" → "1a")
-            let sizeHex  = sizeLine.split(separator: ";").first.map(String.init) ?? sizeLine
-            guard let chunkSize = Int(sizeHex.trimmingCharacters(in: .whitespaces), radix: 16),
-                  chunkSize > 0 else { break }
-
-            let start = eol.upperBound
-            let end   = start + chunkSize
-            guard end <= data.count else { break }
-            result.append(data[start ..< end])
-            let nextOffset = end + 2   // skip trailing \r\n after chunk data
-            guard nextOffset <= data.count else { break }
-            offset = nextOffset
-        }
-        return result
+        HttpChunked.decode(data)
     }
 
     // MARK: - DNS A-Record Resolution

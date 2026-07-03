@@ -1,0 +1,11 @@
+{
+  "_doc": "Golden cases for the iOS hand-written HTTP/1.1 chunked-transfer decoder (audit D3c-08 / HttpChunked.decode). inputHex is the raw chunked body on the wire; expect is the decoded payload as a UTF-8 string. The Android fetcher delegates chunk decoding to OkHttp, so only the iOS host runner (HttpChunkedGoldenCheck) asserts this — it guards the error-prone hand-written path against regressions. Lenient: a malformed length or truncated chunk stops decoding and returns what was read so far.",
+  "cases": [
+    { "name": "single chunk",            "inputHex": "350d0a68656c6c6f0d0a300d0a0d0a",                     "expect": "hello" },
+    { "name": "two chunks concatenate",  "inputHex": "330d0a6162630d0a330d0a6465660d0a300d0a0d0a",         "expect": "abcdef" },
+    { "name": "chunk extension ignored", "inputHex": "353b206578743d666f6f0d0a68656c6c6f0d0a300d0a0d0a",   "expect": "hello" },
+    { "name": "hex length a = 10 bytes", "inputHex": "610d0a303132333435363738390d0a300d0a0d0a",           "expect": "0123456789" },
+    { "name": "terminator only",         "inputHex": "300d0a0d0a",                                         "expect": "" },
+    { "name": "truncated chunk stops",   "inputHex": "350d0a68656c",                                       "expect": "" }
+  ]
+}
