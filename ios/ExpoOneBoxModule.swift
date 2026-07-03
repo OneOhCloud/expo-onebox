@@ -189,13 +189,13 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
 
         // Select a proxy outbound in the ExitGateway selector group
         // via LibboxNewStandaloneCommandClient (same IPC used by stopVPN).
-        AsyncFunction("selectProxyNode") { (node: String) async throws -> Bool in
+        AsyncFunction("selectProxyNode") { (tag: String) async throws -> Bool in
             return try await Task.detached(priority: .userInitiated) {
                 guard let client = LibboxNewStandaloneCommandClient() else {
                     throw NSError(domain: "ExpoOneBox", code: -1,
                                   userInfo: [NSLocalizedDescriptionKey: "Failed to create standalone client"])
                 }
-                try client.selectOutbound("ExitGateway", outboundTag: node)
+                try client.selectOutbound("ExitGateway", outboundTag: tag)
                 return true
             }.value
         }

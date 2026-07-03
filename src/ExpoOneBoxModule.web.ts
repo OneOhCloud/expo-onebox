@@ -218,11 +218,11 @@ class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
     return true;
   }
 
-  async selectProxyNode(node: string): Promise<boolean> {
-    console.log('[Web Mock] selectProxyNode:', node);
-    const exists = MOCK_PROXY_NODE_TAGS.includes(node);
+  async selectProxyNode(tag: string): Promise<boolean> {
+    console.log('[Web Mock] selectProxyNode:', tag);
+    const exists = MOCK_PROXY_NODE_TAGS.includes(tag);
     if (exists) {
-      this._currentNode = node;
+      this._currentNode = tag;
       this.emit('onGroupUpdate', {
         all: buildMockNodes(),
         now: this._currentNode,

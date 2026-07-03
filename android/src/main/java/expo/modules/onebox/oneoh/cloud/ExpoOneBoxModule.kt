@@ -463,10 +463,10 @@ class ExpoOneBoxModule : ServiceConnection.Callback, Module() {
         }
 
         // ---- selectProxyNode: 通过 libbox StandaloneCommandClient 选择节点 ----
-        AsyncFunction("selectProxyNode") { node: String ->
+        AsyncFunction("selectProxyNode") { tag: String ->
             try {
                 val client = Libbox.newStandaloneCommandClient()
-                client?.selectOutbound(GROUP_EXIT_GATEWAY, node)
+                client?.selectOutbound(GROUP_EXIT_GATEWAY, tag)
                 true
             } catch (e: Exception) {
                 Log.w(TAG, "selectProxyNode failed: ${e.message}")
