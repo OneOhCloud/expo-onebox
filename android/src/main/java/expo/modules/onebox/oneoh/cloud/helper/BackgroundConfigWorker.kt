@@ -39,6 +39,9 @@ data class ConfigRefreshResult(
     val profileUserinfoHeader: String? = null,
     val method: String? = null,   // "primary" | "fallback"
     val actualUrl: String? = null, // 实际请求的 URL（加速时为构造后的完整 URL）
+    // 本次刷新的来源主配置 URL。JS 侧据此把结果绑定到对应的配置文件——
+    // 绝不默认写当前活动配置。旧版本存的结果缺此字段（Gson 解码为 null）。
+    val configUrl: String? = null,
 ) {
     fun toMap(): Map<String, Any?> = buildMap {
         put("status", status)
@@ -53,6 +56,7 @@ data class ConfigRefreshResult(
         profileUserinfoHeader?.let { put("profileUserinfoHeader", it) }
         method?.let { put("method", it) }
         actualUrl?.let { put("actualUrl", it) }
+        configUrl?.let { put("configUrl", it) }
     }
 }
 
@@ -456,6 +460,7 @@ internal suspend fun executeRefreshWith(
 
     // 主 → gate → 加速器 的控制流与 fetchProfileConfigWithFallback 共享；
     // 这里只把结果解释为 ConfigRefreshResult + CONFIG_LOAD 诊断。
+    // 末尾的 copy(configUrl = url) 单点覆盖全部分支：结果始终携带来源主 URL。
     return when (val o = fetchWithFallback(preflight, url, userAgent)) {
         is FallbackOutcome.Ok -> {
             val durationMs  = System.currentTimeMillis() - start
@@ -547,7 +552,7 @@ internal suspend fun executeRefreshWith(
                 actualUrl = o.accUrl,
             )
         }
-    }
+    }.copy(configUrl = url)
 }
 
 // MARK: - subscription-userinfo header 解析器

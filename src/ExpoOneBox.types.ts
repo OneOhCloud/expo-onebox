@@ -96,6 +96,12 @@ export interface ConfigRefreshResult {
   profileUserinfoHeader?: string;
   method?: 'primary' | 'fallback';
   actualUrl?: string;  // 加速回落时为构造后的完整 URL
+  /**
+   * 本次刷新的来源主配置 URL（区别于 actualUrl —— 后者是加速回落时实际请求的
+   * 完整 URL）。JS 应用侧据此解析写入目标配置文件，绝不默认写当前活动配置。
+   * 旧版原生存的遗留结果可能缺失此字段。
+   */
+  configUrl?: string;
 }
 
 // 原生层日志事件

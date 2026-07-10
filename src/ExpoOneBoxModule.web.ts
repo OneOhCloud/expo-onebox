@@ -280,6 +280,7 @@ class ExpoOneBoxModule extends NativeModule<ExpoOneBoxModuleEvents> {
       profileUserinfoHeader: header,
       method: 'primary' as const,
       actualUrl: url,
+      configUrl: url,
     };
   }
 

@@ -17,6 +17,9 @@ struct ConfigRefreshResult: Codable {
     var profileUserinfoHeader: String? = nil
     var method: String? = nil    // "primary" | "fallback"
     var actualUrl: String? = nil // 使用回落时的加速 URL
+    // 本次刷新的来源主配置 URL。JS 侧据此把结果绑定到对应的配置文件——
+    // 绝不默认写当前活动配置。旧版本存的结果缺此字段（Codable 解码为 nil）。
+    var configUrl: String? = nil
 
     /// 失败信封，流量四元组（upload/download/total/expire）置零。
     static func failed(
@@ -62,6 +65,7 @@ struct ConfigRefreshResult: Codable {
         if let profileUserinfoHeader { dict["profileUserinfoHeader"] = profileUserinfoHeader }
         if let method { dict["method"] = method }
         if let actualUrl { dict["actualUrl"] = actualUrl }
+        if let configUrl { dict["configUrl"] = configUrl }
         return dict
     }
 }
@@ -368,7 +372,16 @@ struct BackgroundConfigRefresh {
     ///
     /// 取消（BGTask 过期）永远不触发 accelerator 回落——它以 error=CANCELLED
     /// 的失败结果呈现。
+    ///
+    /// 薄包装：结果始终携带来源主 URL（configUrl），单点覆盖 core 的全部返回
+    /// 分支——后台 handler 与 executeConfigRefreshNow 两条路径都经由这里。
     static func executeRefreshWith(url: String, userAgent: String) async -> ConfigRefreshResult {
+        var result = await executeRefreshCore(url: url, userAgent: userAgent)
+        if !url.isEmpty { result.configUrl = url }
+        return result
+    }
+
+    private static func executeRefreshCore(url: String, userAgent: String) async -> ConfigRefreshResult {
         let start    = Date()
         let isoStart = ISO8601DateFormatter().string(from: start)
 
