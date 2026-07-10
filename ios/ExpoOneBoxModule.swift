@@ -170,11 +170,11 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
             return true
         }
 
-        // 返回 Network Extension 写入共享 App Group 文件的最近一次启动错误。
-        // 空字符串表示无错误（或上次启动成功）。
+        // 返回最近一次启动失败的诊断：Network Extension 写入的 startup_error，
+        // 为空时兜底 stderr 尾部（panic / 崩溃路径）。空字符串表示无错误。
         // JS 层在状态从 STARTING → STOPPED 转换时调用此方法。
         Function("getStartError") { () -> String in
-            return self.readStartupError()
+            return self.readStartupDiagnostics()
         }
 
         Function("getStartConfig") { () -> String in
@@ -564,13 +564,13 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
                         NSLog("[ExpoOneBox] self was deallocated before error check")
                         return
                     }
-                    let errMsg = self.readStartupError()
-                    NSLog("[ExpoOneBox] Read startup error file, content: '\(errMsg)'")
+                    let errMsg = self.readStartupDiagnostics()
+                    NSLog("[ExpoOneBox] Read startup diagnostics, content: '\(errMsg)'")
                     if !errMsg.isEmpty {
                         NSLog("[ExpoOneBox] Sending StartServiceFailed error event to JS")
                         self.sendError(type: "StartServiceFailed", message: errMsg, source: "binary")
                     } else {
-                        NSLog("[ExpoOneBox] No error in file, sending generic failure")
+                        NSLog("[ExpoOneBox] No error in file or stderr, sending generic failure")
                         // 发出稳定的机器 token，而非用户可见文本——由 JS 层映射为
                         // 本地化字符串。使原生层保持 i18n-free。
                         self.sendError(type: "StartServiceFailed", message: "START_FAILED_GENERIC", source: "binary")
@@ -578,11 +578,11 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
                 }
             } else if !userInitiatedStop {
                 // 隧道在成功启动后、且没有用户主动停止的情况下掉线——把它暴露
-                // 出来，使失败可观察，而不仅覆盖启动窗口。crash 写的是 stderr 而非
-                // startup_error，因此即便 startup 文件为空也要上报。
+                // 出来，使失败可观察，而不仅覆盖启动窗口。crash/panic 写的是
+                // stderr 而非 startup_error，readStartupDiagnostics 会兜底读取它。
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
                     guard let self else { return }
-                    let errMsg = self.readStartupError()
+                    let errMsg = self.readStartupDiagnostics()
                     self.sendError(type: "UnexpectedDisconnect",
                                    message: errMsg.isEmpty ? "TUNNEL_DISCONNECTED_UNEXPECTEDLY" : errMsg,
                                    source: "binary")
@@ -639,6 +639,40 @@ public class ExpoOneBoxModule: Module, @unchecked Sendable {
         guard FileManager.default.fileExists(atPath: errorFilePath.path) else { return "" }
         let content = (try? String(contentsOf: errorFilePath, encoding: .utf8)) ?? ""
         return content.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// startup_error.txt 为空时的兜底：go panic / 运行时崩溃写入的是重定向后的
+    /// stderr（extension 启动时经 LibboxRedirectStderr 指向
+    /// <AppGroup>/Library/Caches/stderr.log），而非 startup_error。libbox 每次
+    /// 启动会把非空的 stderr.log 轮转为 .old 再新建，因此此文件的内容一定属于
+    /// 最近一次运行——读取尾部，使“无声退出”也能给出可定位的信息。
+    ///
+    /// mtime 新鲜度守卫：若失败发生在轮转之前（如 NE 未能拉起 extension 进程），
+    /// 文件里是上一次运行的残留——把陈旧内容当本次根因比没有信息更糟。
+    private func readStderrTail(maxBytes: UInt64 = 4096, maxAgeSeconds: TimeInterval = 120) -> String {
+        guard let cachesDir = appGroupCachesURL() else { return "" }
+        let stderrURL = cachesDir.appendingPathComponent("stderr.log")
+        if let mtime = (try? FileManager.default.attributesOfItem(atPath: stderrURL.path))?[.modificationDate] as? Date,
+           Date().timeIntervalSince(mtime) > maxAgeSeconds {
+            return ""
+        }
+        guard let handle = try? FileHandle(forReadingFrom: stderrURL) else { return "" }
+        defer { try? handle.close() }
+        guard let size = try? handle.seekToEnd(), size > 0 else { return "" }
+        try? handle.seek(toOffset: size > maxBytes ? size - maxBytes : 0)
+        guard let data = try? handle.readToEnd(), !data.isEmpty else { return "" }
+        return String(decoding: data, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// 启动失败诊断的单一读取入口：优先 startup_error.txt（libbox 抛错路径），
+    /// 否则回落到 stderr 尾部（panic / 崩溃路径）。两者皆空返回 ""。
+    private func readStartupDiagnostics() -> String {
+        let startupError = readStartupError()
+        if !startupError.isEmpty { return startupError }
+        let stderrTail = readStderrTail()
+        if !stderrTail.isEmpty { return "stderr tail:\n\(stderrTail)" }
+        return ""
     }
 
     // MARK: - Cleanup
